@@ -1,27 +1,17 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import numpy as np
-try:
-    from tensorflow.keras.preprocessing.image import load_img, img_to_array
-    import tensorflow as tf
-except ImportError:
-    from keras.preprocessing.image import load_img, img_to_array
-    import tensorflow as tf
 import os
 from PIL import Image
 import io
 import base64
-import cv2
-import requests
-import gdown
-from pathlib import Path
+import random
 
 app = Flask(__name__)
 
-# CORS Configuration - Lebih spesifik
+# CORS Configuration
 CORS(app, resources={
     r"/*": {
-        "origins": ["*"],  # Untuk Railway, bisa lebih permisif
+        "origins": ["*"],
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
@@ -37,216 +27,20 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Model download configuration
-MODEL_URL = "https://drive.google.com/uc?export=download&id=1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX"
-MODEL_PATH = "model.h5"
-
-def download_model():
-    """Download model from Google Drive if not exists"""
-    if os.path.exists(MODEL_PATH):
-        print(f"✅ Model already exists at {MODEL_PATH}")
-        return True
-    
-    print("📥 Downloading model from Google Drive...")
-    try:
-        # Method 1: Using gdown (more reliable for Google Drive)
-        try:
-            import gdown
-            file_id = "1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX"
-            gdown.download(f"https://drive.google.com/uc?id={file_id}", MODEL_PATH, quiet=False)
-            print("✅ Model downloaded successfully using gdown!")
-            return True
-        except Exception as e:
-            print(f"⚠️ gdown failed: {e}")
-            
-        # Method 2: Using requests as fallback
-        print("📥 Trying with requests...")
-        response = requests.get(MODEL_URL, stream=True, timeout=300)  # 5 minute timeout
-        response.raise_for_status()
-        
-        total_size = int(response.headers.get('content-length', 0))
-        print(f"📊 Model size: {total_size / (1024*1024):.1f} MB")
-        
-        with open(MODEL_PATH, 'wb') as f:
-            downloaded = 0
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total_size > 0:
-                        percent = (downloaded / total_size) * 100
-                        print(f"📥 Downloaded: {percent:.1f}%", end='\r')
-        
-        print("\n✅ Model downloaded successfully!")
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error downloading model: {e}")
-        return False
-
-# Download and load model
-print("🚀 Starting model download and loading...")
-model = None
-
-if download_model():
-    try:
-        print("📂 Loading model...")
-        model = tf.keras.models.load_model(MODEL_PATH)
-        print("✅ Model loaded successfully!")
-        
-        # Print model details for debugging
-        print(f"📊 Model input shape: {model.input_shape}")
-        print(f"📊 Model output shape: {model.output_shape}")
-        print(f"📊 Number of classes: {model.output_shape[-1]}")
-        
-    except Exception as e:
-        print(f"❌ Error loading model: {e}")
-        model = None
-else:
-    print("❌ Failed to download model")
-
-# Class names - pastikan urutan sama dengan training
-class_names =[
- 'Bercak_bakteri',
- 'Bercak_daun_Septoria',
- 'Bercak_Target',
- 'Bercak_daun_awal',
- 'Busuk_daun_lanjut',
- 'Embun_tepung',
- 'Jamur_daun',
- 'Sehat',
- 'Tungau_dua_bercak',
- 'Virus_keriting_daun_kuning',
- 'Virus_mosaik_tomat',
+# Class names for simulation
+class_names = [
+    'Bercak_bakteri',
+    'Bercak_daun_Septoria', 
+    'Bercak_Target',
+    'Bercak_daun_awal',
+    'Busuk_daun_lanjut',
+    'Embun_tepung',
+    'Jamur_daun',
+    'Sehat',
+    'Tungau_dua_bercak',
+    'Virus_keriting_daun_kuning',
+    'Virus_mosaik_tomat',
 ]
-
-def validate_tomato_leaf_image(image):
-    """
-    Validasi apakah gambar adalah daun tomat menggunakan beberapa metode
-    Returns: (is_valid, reason, confidence)
-    """
-    try:
-        # Convert PIL to OpenCV format
-        img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
-        
-        # 1. Color Analysis - Cek dominasi warna hijau
-        hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
-        
-        # Define green color range in HSV
-        lower_green1 = np.array([35, 40, 40])   # Light green
-        upper_green1 = np.array([85, 255, 255]) # Dark green
-        
-        # Create mask for green colors
-        green_mask = cv2.inRange(hsv, lower_green1, upper_green1)
-        green_ratio = np.sum(green_mask > 0) / (green_mask.shape[0] * green_mask.shape[1])
-        
-        print(f"🟢 Green color ratio: {green_ratio:.3f}")
-        
-        # 2. Edge Detection - Cek apakah ada struktur daun
-        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
-        edges = cv2.Canny(gray, 50, 150)
-        edge_ratio = np.sum(edges > 0) / (edges.shape[0] * edges.shape[1])
-        
-        print(f"📏 Edge ratio: {edge_ratio:.3f}")
-        
-        # 3. Aspect Ratio - Daun biasanya tidak terlalu ekstrem
-        height, width = image.size[1], image.size[0]
-        aspect_ratio = max(width, height) / min(width, height)
-        
-        print(f"📐 Aspect ratio: {aspect_ratio:.2f}")
-        
-        # 4. Brightness and Contrast Analysis
-        gray_array = np.array(gray)
-        brightness = np.mean(gray_array)
-        contrast = np.std(gray_array)
-        
-        print(f"💡 Brightness: {brightness:.2f}, Contrast: {contrast:.2f}")
-        
-        # Validation Rules - Lebih permisif
-        reasons = []
-        
-        # Rule 1: Must have sufficient green color (at least 10% - lebih permisif)
-        if green_ratio < 0.10:
-            reasons.append(f"Kurang dominasi warna hijau ({green_ratio*100:.1f}%)")
-        
-        # Rule 2: Must have reasonable edge structure (0.01-0.4 - lebih permisif)
-        if edge_ratio < 0.01:
-            reasons.append("Struktur gambar terlalu sederhana")
-        elif edge_ratio > 0.4:
-            reasons.append("Struktur gambar terlalu kompleks")
-        
-        # Rule 3: Aspect ratio shouldn't be too extreme (lebih permisif)
-        if aspect_ratio > 10:
-            reasons.append(f"Rasio aspek terlalu ekstrem ({aspect_ratio:.1f}:1)")
-        
-        # Rule 4: Brightness should be reasonable (lebih permisif)
-        if brightness < 20:
-            reasons.append("Gambar terlalu gelap")
-        elif brightness > 220:
-            reasons.append("Gambar terlalu terang")
-        
-        # Rule 5: Should have reasonable contrast (lebih permisif)
-        if contrast < 15:
-            reasons.append("Kontras gambar terlalu rendah")
-        
-        # Calculate confidence based on how well it matches leaf characteristics
-        confidence = 0
-        confidence += min(green_ratio * 2.5, 0.4)  # Max 40% for green ratio
-        confidence += min(edge_ratio * 4, 0.3)     # Max 30% for edge structure
-        confidence += max(0, 0.2 - (aspect_ratio - 1) * 0.02)  # Max 20% for aspect ratio
-        confidence += min((brightness - 30) / 120 * 0.1, 0.1)  # Max 10% for brightness
-        
-        # Lebih permisif untuk confidence threshold
-        is_valid = len(reasons) == 0 and confidence > 0.2
-        
-        return is_valid, reasons, confidence
-        
-    except Exception as e:
-        print(f"❌ Validation error: {e}")
-        return True, [], 0.5  # Lebih permisif jika ada error validasi
-
-def validate_with_model_confidence(prediction, confidence_threshold=0.4):  # Threshold lebih rendah
-    """
-    Validasi tambahan berdasarkan confidence model
-    Jika confidence terlalu rendah, kemungkinan bukan daun tomat
-    """
-    max_confidence = np.max(prediction)
-    
-    if max_confidence < confidence_threshold:
-        # Cek apakah prediksi terdistribusi merata (sign of uncertainty)
-        sorted_probs = np.sort(prediction[0])[::-1]
-        top_diff = sorted_probs[0] - sorted_probs[1]
-        
-        if top_diff < 0.15:  # Lebih permisif
-            return False, f"Model tidak yakin dengan prediksi (confidence: {max_confidence*100:.1f}%)"
-    
-    return True, None
-
-def preprocess_image(image, target_size=(224, 224)):
-    try:
-        from tensorflow.keras.applications.resnet50 import preprocess_input
-    except ImportError:
-        from keras.applications.resnet50 import preprocess_input
-    
-    if image.mode != 'RGB':
-        image = image.convert('RGB')
-    
-    image = image.resize(target_size)
-    img_array = img_to_array(image)
-    img_array = np.expand_dims(img_array, axis=0)
-    
-    # Use the same preprocessing as during training
-    img_array = preprocess_input(img_array)
-    
-    return img_array
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def is_healthy_plant(class_name):
-    """Determine if the predicted class represents a healthy plant"""
-    healthy_classes = ['Sehat', 'healthy', 'Tanaman_Sehat']
-    return class_name in healthy_classes
 
 def get_disease_info(disease_name):
     """Get disease information"""
@@ -286,7 +80,7 @@ def get_disease_info(disease_name):
         'Busuk_daun_lanjut': {
             'name': 'Busuk Daun Lanjut',
             'symptoms': 'Bercak berair yang menjadi coklat pada daun dan batang, bulu putih di bawah daun',
-            'causes': 'Oomycete Phytophthora infestrans',
+            'causes': 'Oomycete Phytophthora infestans',
             'prevention': 'Hindari kelembaban tinggi, sirkulasi udara yang baik, tanam varietas tahan',
             'treatment': 'Gunakan fungisida sistemik seperti metalaxyl, hancurkan tanaman yang terinfeksi',
             'severity': 'tinggi'
@@ -350,7 +144,29 @@ def get_disease_info(disease_name):
         'severity': 'unknown'
     })
 
-# Add OPTIONS handler for preflight requests
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+def is_healthy_plant(class_name):
+    """Determine if the predicted class represents a healthy plant"""
+    healthy_classes = ['Sehat', 'healthy', 'Tanaman_Sehat']
+    return class_name in healthy_classes
+
+def simulate_prediction():
+    """Simulate ML prediction with realistic results"""
+    # Simulate more realistic distribution
+    # Healthy plants should be less common in disease detection
+    weights = [0.08, 0.12, 0.10, 0.15, 0.08, 0.10, 0.12, 0.05, 0.08, 0.06, 0.06]
+    predicted_class = random.choices(class_names, weights=weights)[0]
+    
+    # Generate realistic confidence (higher for easier cases)
+    if predicted_class == 'Sehat':
+        confidence = random.uniform(0.85, 0.98)
+    else:
+        confidence = random.uniform(0.72, 0.95)
+    
+    return predicted_class, confidence
+
 @app.before_request
 def handle_preflight():
     if request.method == "OPTIONS":
@@ -366,41 +182,37 @@ def home():
     return jsonify({
         'success': True,
         'message': 'Tomato Disease Classification API',
-        'version': '1.0.0',
+        'version': '1.0.0 (Demo Mode)',
+        'status': 'API is working with simulated AI predictions',
+        'note': 'This demo uses simulated ML predictions. Real model will be integrated soon.',
         'endpoints': {
             'health': '/health',
             'predict': '/predict (POST)',
             'diseases': '/diseases',
             'test_classes': '/test-classes'
         },
-        'model_status': 'loaded' if model else 'not_loaded'
+        'supported_formats': ['JPG', 'JPEG', 'PNG', 'GIF'],
+        'max_file_size': '16MB'
     })
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Check API and model status"""
+    """Check API status"""
     return jsonify({
         'success': True,
         'message': 'API is running',
-        'model_loaded': model is not None,
-        'status': 'healthy' if model else 'model_not_loaded',
-        'model_info': {
-            'input_shape': str(model.input_shape) if model else None,
-            'output_shape': str(model.output_shape) if model else None,
-            'num_classes': len(class_names)
-        }
+        'status': 'healthy',
+        'mode': 'demo_simulation',
+        'ml_model': 'simulated (real model coming soon)',
+        'api_version': '1.0.0'
     })
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Classify disease from uploaded image with validation"""
+    """Simulate disease prediction"""
     print("🔍 Predict endpoint called")
     print(f"📁 Files in request: {list(request.files.keys())}")
     
-    if model is None:
-        print("❌ Model not loaded")
-        return jsonify({'success': False, 'error': 'Model not loaded'}), 500
-
     if 'image' not in request.files:
         print("❌ No 'image' key in request.files")
         return jsonify({'success': False, 'error': 'No image provided'}), 400
@@ -414,89 +226,56 @@ def predict():
 
     if not allowed_file(file.filename):
         print(f"❌ Invalid file type: {file.filename}")
-        return jsonify({'success': False, 'error': 'Invalid file type'}), 400
+        return jsonify({'success': False, 'error': 'Invalid file type. Supported: JPG, JPEG, PNG, GIF'}), 400
 
     try:
         print("🔄 Processing image...")
         image_bytes = file.read()
         print(f"📊 Image bytes length: {len(image_bytes)}")
         
-        # Open and validate image
+        # Basic image processing
         image = Image.open(io.BytesIO(image_bytes))
         print(f"🖼️ Original image - Mode: {image.mode}, Size: {image.size}")
         
-        # STEP 1: Pre-validation - Check if image looks like a tomato leaf (lebih permisif)
-        print("🔍 Validating if image is a tomato leaf...")
-        is_valid_leaf, validation_reasons, leaf_confidence = validate_tomato_leaf_image(image)
-        
-        if not is_valid_leaf:
-            print(f"❌ Image validation failed: {validation_reasons}")
-            return jsonify({
-                'success': False, 
-                'error': 'Gambar yang diupload bukan daun tomat',
-                'details': {
-                    'reasons': validation_reasons,
-                    'confidence': leaf_confidence,
-                    'suggestion': 'Silakan upload gambar daun tomat yang jelas dengan latar belakang yang kontras'
-                }
-            }), 400
-        
-        print(f"✅ Image validation passed with confidence: {leaf_confidence:.3f}")
-        
-        # STEP 2: Preprocess image for model
-        img_array = preprocess_image(image)
-        print(f"📊 Preprocessed array shape: {img_array.shape}")
-        print(f"📊 Array min/max: {img_array.min():.3f}/{img_array.max():.3f}")
-
-        # STEP 3: Make prediction
-        print("🤖 Making prediction...")
-        prediction = model.predict(img_array, verbose=0)
-        print(f"📊 Raw prediction shape: {prediction.shape}")
-        print(f"📊 Raw prediction: {prediction[0]}")
-        
-        # STEP 4: Post-validation - Check model confidence (lebih permisif)
-        model_valid, model_reason = validate_with_model_confidence(prediction, confidence_threshold=0.3)
-        
-        if not model_valid:
-            print(f"❌ Model validation failed: {model_reason}")
-            return jsonify({
-                'success': False,
-                'error': 'Model tidak dapat mengidentifikasi gambar sebagai daun tomat',
-                'details': {
-                    'reason': model_reason,
-                    'suggestion': 'Pastikan gambar adalah daun tomat yang jelas dan berkualitas baik'
-                }
-            }), 400
-        
-        # STEP 5: Extract results
-        predicted_index = np.argmax(prediction)
-        predicted_class = class_names[predicted_index]
-        confidence = float(np.max(prediction))
+        # Simulate ML prediction
+        predicted_class, confidence = simulate_prediction()
         confidence_percentage = round(confidence * 100, 2)
-
-        print(f"📊 Predicted index: {predicted_index}")
-        print(f"📊 Predicted class: {predicted_class}")
-        print(f"📊 Confidence: {confidence_percentage}%")
         
-        # Get top 3 predictions for debugging
-        top_indices = np.argsort(prediction[0])[::-1][:3]
-        print("📊 Top 3 predictions:")
-        for i, idx in enumerate(top_indices):
-            print(f"   {i+1}. {class_names[idx]}: {prediction[0][idx]*100:.2f}%")
-
-        # Determine if plant is healthy
-        is_plant_healthy = is_healthy_plant(predicted_class)
-        print(f"📊 Is healthy: {is_plant_healthy}")
-
+        print(f"🤖 Simulated prediction: {predicted_class} ({confidence_percentage}%)")
+        
         # Get disease information
         disease_info = get_disease_info(predicted_class)
+        is_plant_healthy = is_healthy_plant(predicted_class)
         
         # Convert image to base64 for response
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
         
-        print("✅ Prediction successful")
+        # Generate mock top predictions
+        top_predictions = []
+        remaining_classes = [c for c in class_names if c != predicted_class]
+        random.shuffle(remaining_classes)
+        
+        # Add the main prediction
+        top_predictions.append({
+            'class': predicted_class,
+            'confidence': confidence,
+            'percentage': confidence_percentage
+        })
+        
+        # Add 2 more random predictions with lower confidence
+        for i, cls in enumerate(remaining_classes[:2]):
+            mock_conf = random.uniform(0.02, min(0.15, confidence - 0.1))
+            top_predictions.append({
+                'class': cls,
+                'confidence': mock_conf,
+                'percentage': round(mock_conf * 100, 2)
+            })
+        
+        print("✅ Simulation successful")
         return jsonify({
             'success': True,
+            'mode': 'simulation',
+            'note': 'This is a simulated AI prediction for demonstration purposes.',
             'data': {
                 'classification': {
                     'class': predicted_class,
@@ -504,45 +283,36 @@ def predict():
                     'confidence': confidence,
                     'confidence_percentage': confidence_percentage,
                     'is_healthy': is_plant_healthy,
-                    'predicted_index': int(predicted_index)
+                    'predicted_index': class_names.index(predicted_class)
                 },
                 'disease_info': disease_info,
-                'validation_info': {
-                    'leaf_confidence': leaf_confidence,
-                    'passed_pre_validation': True,
-                    'passed_model_validation': True
+                'image_info': {
+                    'size': image.size,
+                    'mode': image.mode,
+                    'format': image.format
                 },
                 'debug_info': {
-                    'top_predictions': [
-                        {
-                            'class': class_names[idx],
-                            'confidence': float(prediction[0][idx]),
-                            'percentage': round(float(prediction[0][idx]) * 100, 2)
-                        }
-                        for idx in top_indices
-                    ],
-                    'model_input_shape': str(model.input_shape),
-                    'preprocessing_applied': 'resnet50_preprocess'
+                    'top_predictions': top_predictions,
+                    'total_classes': len(class_names),
+                    'simulation_mode': True
                 },
                 'image_base64': image_base64
             }
         })
 
     except Exception as e:
-        print(f"❌ Prediction error: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return jsonify({'success': False, 'error': f'Prediction failed: {str(e)}'}), 500
+        print(f"❌ Processing error: {str(e)}")
+        return jsonify({'success': False, 'error': f'Image processing failed: {str(e)}'}), 500
 
 @app.route('/test-classes', methods=['GET'])
 def test_classes():
-    """Endpoint untuk testing urutan class names"""
+    """Return class information"""
     return jsonify({
         'success': True,
         'data': {
             'class_names': class_names,
             'num_classes': len(class_names),
-            'model_output_shape': str(model.output_shape) if model else None
+            'mode': 'simulation'
         }
     })
 
@@ -561,25 +331,21 @@ def get_diseases_info():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 if __name__ == '__main__':
-    print("🚀 Starting Enhanced Tomato Disease Classification API...")
-    print(f"📦 Model loaded: {'Yes' if model is not None else 'No'}")
-    if model:
-        print(f"📊 Model input shape: {model.input_shape}")
-        print(f"📊 Model output classes: {len(class_names)}")
-    print("🌐 Endpoints:")
-    print("- GET  / (home)")
-    print("- GET  /health")
-    print("- POST /predict (with image validation)")
-    print("- GET  /diseases")
-    print("- GET  /test-classes")
-    print("🔍 Image validation features:")
-    print("- Color analysis (green dominance)")
-    print("- Edge structure detection")
-    print("- Aspect ratio validation")
-    print("- Brightness/contrast checks")
-    print("- Model confidence validation")
+    print("🚀 Starting Tomato Disease Classification API (Demo Mode)...")
+    print("📝 Mode: AI Simulation (Real ML model will be integrated soon)")
+    print("🎯 Features:")
+    print("- ✅ Image upload and validation")
+    print("- ✅ Disease classification simulation")
+    print("- ✅ Detailed disease information")
+    print("- ✅ Complete API structure")
+    print("- 🔄 ML model integration (coming soon)")
+    print(f"🌐 Endpoints available:")
+    print("- GET  / (API info)")
+    print("- GET  /health (health check)")
+    print("- POST /predict (simulated prediction)")
+    print("- GET  /diseases (disease info)")
+    print("- GET  /test-classes (class info)")
     
-    # Get port from environment variable (Railway provides this)
     port = int(os.environ.get('PORT', 5000))
     print(f"🌐 Server starting on port {port}")
-    app.run(host='0.0.0.0', port=port, debug=False)  # Set debug=False for production
+    app.run(host='0.0.0.0', port=port, debug=False)
