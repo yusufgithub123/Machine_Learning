@@ -11,10 +11,10 @@ import cv2
 
 app = Flask(__name__)
 
-# CORS Configuration - Lebih spesifik
+# CORS Configuration - Allow Railway domain
 CORS(app, resources={
     r"/*": {
-        "origins": ["http://localhost", "http://127.0.0.1", "http://localhost:8000", "http://127.0.0.1:8000"],
+        "origins": ["*"],  # Allow all origins for Railway
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
@@ -28,67 +28,109 @@ MAX_CONTENT_LENGTH = 16 * 1024 * 1024
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-
-# Load model
+# Create uploads directory if it doesn't exist
 try:
-    model = tf.keras.models.load_model('model.h5')
-    print("✅ Model loaded successfully!")
-    
-    # Print model details for debugging
-    print(f"📊 Model input shape: {model.input_shape}")
-    print(f"📊 Model output shape: {model.output_shape}")
-    print(f"📊 Number of classes: {model.output_shape[-1]}")
-    
-except Exception as e:
-    print(f"❌ Error loading model: {e}")
-    model = None
+    os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+except:
+    pass
 
-# Class names - pastikan urutan sama dengan training
-class_names =[
- 'Bercak_bakteri',
- 'Bercak_daun_Septoria',
- 'Bercak_Target',
- 'Bercak_daun_awal',
- 'Busuk_daun_lanjut',
- 'Embun_tepung',
- 'Jamur_daun',
- 'Sehat',
- 'Tungau_dua_bercak',
- 'Virus_keriting_daun_kuning',
- 'Virus_mosaik_tomat',
+# Load model with better error handling
+model = None
+model_error = None
+
+def load_model_safely():
+    """Safely load the model with detailed error reporting"""
+    global model, model_error
+    
+    model_paths = ['model.h5', './model.h5', '/app/model.h5']
+    
+    for model_path in model_paths:
+        try:
+            print(f"🔍 Trying to load model from: {model_path}")
+            
+            # Check if file exists
+            if os.path.exists(model_path):
+                file_size = os.path.getsize(model_path)
+                print(f"📁 File found! Size: {file_size} bytes")
+                
+                # Try to load
+                model = tf.keras.models.load_model(model_path)
+                print("✅ Model loaded successfully!")
+                print(f"📊 Model input shape: {model.input_shape}")
+                print(f"📊 Model output shape: {model.output_shape}")
+                print(f"📊 Number of classes: {model.output_shape[-1]}")
+                return True
+            else:
+                print(f"❌ File not found: {model_path}")
+                
+        except Exception as e:
+            print(f"❌ Error loading model from {model_path}: {e}")
+            model_error = str(e)
+            continue
+    
+    # If we reach here, model loading failed
+    print("❌ Failed to load model from all attempted paths")
+    
+    # List all files in current directory for debugging
+    try:
+        print("📁 Files in current directory:")
+        for file in os.listdir('.'):
+            if os.path.isfile(file):
+                size = os.path.getsize(file)
+                print(f"  - {file} ({size} bytes)")
+    except:
+        print("❌ Could not list files in current directory")
+    
+    return False
+
+# Try to load model
+load_model_safely()
+
+# Class names - ensure order matches training
+class_names = [
+    'Bercak_bakteri',
+    'Bercak_daun_Septoria', 
+    'Bercak_Target',
+    'Bercak_daun_awal',
+    'Busuk_daun_lanjut',
+    'Embun_tepung',
+    'Jamur_daun',
+    'Sehat',
+    'Tungau_dua_bercak',
+    'Virus_keriting_daun_kuning',
+    'Virus_mosaik_tomat',
 ]
 
 def validate_tomato_leaf_image(image):
     """
-    Validasi apakah gambar adalah daun tomat menggunakan beberapa metode
+    Validate if image is a tomato leaf using computer vision
     Returns: (is_valid, reason, confidence)
     """
     try:
         # Convert PIL to OpenCV format
         img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
         
-        # 1. Color Analysis - Cek dominasi warna hijau
+        # 1. Color Analysis - Check green color dominance
         hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
         
         # Define green color range in HSV
-        lower_green1 = np.array([35, 40, 40])   # Light green
-        upper_green1 = np.array([85, 255, 255]) # Dark green
+        lower_green = np.array([35, 40, 40])
+        upper_green = np.array([85, 255, 255])
         
         # Create mask for green colors
-        green_mask = cv2.inRange(hsv, lower_green1, upper_green1)
+        green_mask = cv2.inRange(hsv, lower_green, upper_green)
         green_ratio = np.sum(green_mask > 0) / (green_mask.shape[0] * green_mask.shape[1])
         
         print(f"🟢 Green color ratio: {green_ratio:.3f}")
         
-        # 2. Edge Detection - Cek apakah ada struktur daun
+        # 2. Edge Detection - Check leaf structure
         gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
         edges = cv2.Canny(gray, 50, 150)
         edge_ratio = np.sum(edges > 0) / (edges.shape[0] * edges.shape[1])
         
         print(f"📏 Edge ratio: {edge_ratio:.3f}")
         
-        # 3. Aspect Ratio - Daun biasanya tidak terlalu ekstrem
+        # 3. Aspect Ratio - Leaves shouldn't be too extreme
         height, width = image.size[1], image.size[0]
         aspect_ratio = max(width, height) / min(width, height)
         
@@ -101,69 +143,66 @@ def validate_tomato_leaf_image(image):
         
         print(f"💡 Brightness: {brightness:.2f}, Contrast: {contrast:.2f}")
         
-        # Validation Rules - Lebih permisif
+        # Validation Rules - More permissive
         reasons = []
         
-        # Rule 1: Must have sufficient green color (at least 10% - lebih permisif)
-        if green_ratio < 0.10:
-            reasons.append(f"Kurang dominasi warna hijau ({green_ratio*100:.1f}%)")
+        # Rule 1: Must have sufficient green color (at least 8%)
+        if green_ratio < 0.08:
+            reasons.append(f"Insufficient green color ({green_ratio*100:.1f}%)")
         
-        # Rule 2: Must have reasonable edge structure (0.01-0.4 - lebih permisif)
-        if edge_ratio < 0.01:
-            reasons.append("Struktur gambar terlalu sederhana")
-        elif edge_ratio > 0.4:
-            reasons.append("Struktur gambar terlalu kompleks")
+        # Rule 2: Must have reasonable edge structure
+        if edge_ratio < 0.008:
+            reasons.append("Image structure too simple")
+        elif edge_ratio > 0.5:
+            reasons.append("Image structure too complex")
         
-        # Rule 3: Aspect ratio shouldn't be too extreme (lebih permisif)
-        if aspect_ratio > 10:
-            reasons.append(f"Rasio aspek terlalu ekstrem ({aspect_ratio:.1f}:1)")
+        # Rule 3: Aspect ratio shouldn't be too extreme
+        if aspect_ratio > 12:
+            reasons.append(f"Aspect ratio too extreme ({aspect_ratio:.1f}:1)")
         
-        # Rule 4: Brightness should be reasonable (lebih permisif)
-        if brightness < 20:
-            reasons.append("Gambar terlalu gelap")
-        elif brightness > 220:
-            reasons.append("Gambar terlalu terang")
+        # Rule 4: Brightness should be reasonable
+        if brightness < 15:
+            reasons.append("Image too dark")
+        elif brightness > 235:
+            reasons.append("Image too bright")
         
-        # Rule 5: Should have reasonable contrast (lebih permisif)
-        if contrast < 15:
-            reasons.append("Kontras gambar terlalu rendah")
+        # Rule 5: Should have reasonable contrast
+        if contrast < 10:
+            reasons.append("Image contrast too low")
         
-        # Calculate confidence based on how well it matches leaf characteristics
+        # Calculate confidence
         confidence = 0
-        confidence += min(green_ratio * 2.5, 0.4)  # Max 40% for green ratio
-        confidence += min(edge_ratio * 4, 0.3)     # Max 30% for edge structure
-        confidence += max(0, 0.2 - (aspect_ratio - 1) * 0.02)  # Max 20% for aspect ratio
-        confidence += min((brightness - 30) / 120 * 0.1, 0.1)  # Max 10% for brightness
+        confidence += min(green_ratio * 3, 0.4)
+        confidence += min(edge_ratio * 3, 0.3)
+        confidence += max(0, 0.2 - (aspect_ratio - 1) * 0.015)
+        confidence += min((brightness - 20) / 150 * 0.1, 0.1)
         
-        # Lebih permisif untuk confidence threshold
-        is_valid = len(reasons) == 0 and confidence > 0.2
+        is_valid = len(reasons) == 0 and confidence > 0.15
         
         return is_valid, reasons, confidence
         
     except Exception as e:
         print(f"❌ Validation error: {e}")
-        return True, [], 0.5  # Lebih permisif jika ada error validasi
+        return True, [], 0.5  # Be permissive if validation fails
 
-def validate_with_model_confidence(prediction, confidence_threshold=0.4):  # Threshold lebih rendah
+def validate_with_model_confidence(prediction, confidence_threshold=0.3):
     """
-    Validasi tambahan berdasarkan confidence model
-    Jika confidence terlalu rendah, kemungkinan bukan daun tomat
+    Additional validation based on model confidence
     """
     max_confidence = np.max(prediction)
     
     if max_confidence < confidence_threshold:
-        # Cek apakah prediksi terdistribusi merata (sign of uncertainty)
+        # Check if prediction is evenly distributed (sign of uncertainty)
         sorted_probs = np.sort(prediction[0])[::-1]
         top_diff = sorted_probs[0] - sorted_probs[1]
         
-        if top_diff < 0.15:  # Lebih permisif
-            return False, f"Model tidak yakin dengan prediksi (confidence: {max_confidence*100:.1f}%)"
+        if top_diff < 0.12:
+            return False, f"Model uncertain about prediction (confidence: {max_confidence*100:.1f}%)"
     
     return True, None
 
 def preprocess_image(image, target_size=(224, 224)):
-    from tensorflow.keras.applications.resnet50 import preprocess_input
-    
+    """Preprocess image for model prediction"""
     if image.mode != 'RGB':
         image = image.convert('RGB')
     
@@ -171,8 +210,8 @@ def preprocess_image(image, target_size=(224, 224)):
     img_array = img_to_array(image)
     img_array = np.expand_dims(img_array, axis=0)
     
-    # Use the same preprocessing as during training
-    img_array = preprocess_input(img_array)
+    # Normalize to [0, 1] range (adjust based on your training)
+    img_array = img_array / 255.0
     
     return img_array
 
@@ -185,7 +224,7 @@ def is_healthy_plant(class_name):
     return class_name in healthy_classes
 
 def get_disease_info(disease_name):
-    """Get disease information"""
+    """Get detailed disease information"""
     info = {
         'Bercak_bakteri': {
             'name': 'Bercak Bakteri',
@@ -279,10 +318,10 @@ def get_disease_info(disease_name):
     
     return info.get(disease_name, {
         'name': disease_name,
-        'symptoms': 'Informasi tidak tersedia',
-        'causes': 'Tidak diketahui',
-        'prevention': 'Konsultasikan dengan ahli pertanian',
-        'treatment': 'Konsultasikan dengan ahli setempat',
+        'symptoms': 'Information not available',
+        'causes': 'Unknown',
+        'prevention': 'Consult agricultural expert',
+        'treatment': 'Consult local expert',
         'severity': 'unknown'
     })
 
@@ -301,13 +340,14 @@ def home():
     """Root endpoint - welcome message"""
     return jsonify({
         'success': True,
-        'message': 'API is running',
+        'message': 'Tomato Disease Classification API is running',
         'model_info': {
             'input_shape': str(model.input_shape) if model else None,
             'num_classes': len(class_names),
             'output_shape': str(model.output_shape) if model else None
         },
         'model_loaded': model is not None,
+        'model_error': model_error if model is None else None,
         'status': 'healthy' if model else 'model_not_loaded',
         'endpoints': {
             'health': '/health',
@@ -326,12 +366,14 @@ def health_check():
         'success': True,
         'message': 'API is running',
         'model_loaded': model is not None,
+        'model_error': model_error if model is None else None,
         'status': 'healthy' if model else 'model_not_loaded',
         'model_info': {
             'input_shape': str(model.input_shape) if model else None,
             'output_shape': str(model.output_shape) if model else None,
             'num_classes': len(class_names)
-        }
+        },
+        'tf_version': tf.__version__
     })
 
 @app.route('/predict', methods=['POST'])
@@ -342,7 +384,11 @@ def predict():
     
     if model is None:
         print("❌ Model not loaded")
-        return jsonify({'success': False, 'error': 'Model not loaded'}), 500
+        return jsonify({
+            'success': False, 
+            'error': 'Model not loaded',
+            'model_error': model_error
+        }), 500
 
     if 'image' not in request.files:
         print("❌ No 'image' key in request.files")
@@ -368,7 +414,7 @@ def predict():
         image = Image.open(io.BytesIO(image_bytes))
         print(f"🖼️ Original image - Mode: {image.mode}, Size: {image.size}")
         
-        # STEP 1: Pre-validation - Check if image looks like a tomato leaf (lebih permisif)
+        # STEP 1: Pre-validation - Check if image looks like a tomato leaf
         print("🔍 Validating if image is a tomato leaf...")
         is_valid_leaf, validation_reasons, leaf_confidence = validate_tomato_leaf_image(image)
         
@@ -376,11 +422,11 @@ def predict():
             print(f"❌ Image validation failed: {validation_reasons}")
             return jsonify({
                 'success': False, 
-                'error': 'Gambar yang diupload bukan daun tomat',
+                'error': 'Uploaded image does not appear to be a tomato leaf',
                 'details': {
                     'reasons': validation_reasons,
                     'confidence': leaf_confidence,
-                    'suggestion': 'Silakan upload gambar daun tomat yang jelas dengan latar belakang yang kontras'
+                    'suggestion': 'Please upload a clear image of a tomato leaf with good contrast'
                 }
             }), 400
         
@@ -397,17 +443,17 @@ def predict():
         print(f"📊 Raw prediction shape: {prediction.shape}")
         print(f"📊 Raw prediction: {prediction[0]}")
         
-        # STEP 4: Post-validation - Check model confidence (lebih permisif)
-        model_valid, model_reason = validate_with_model_confidence(prediction, confidence_threshold=0.3)
+        # STEP 4: Post-validation - Check model confidence
+        model_valid, model_reason = validate_with_model_confidence(prediction, confidence_threshold=0.25)
         
         if not model_valid:
             print(f"❌ Model validation failed: {model_reason}")
             return jsonify({
                 'success': False,
-                'error': 'Model tidak dapat mengidentifikasi gambar sebagai daun tomat',
+                'error': 'Model cannot confidently identify the image as a tomato leaf',
                 'details': {
                     'reason': model_reason,
-                    'suggestion': 'Pastikan gambar adalah daun tomat yang jelas dan berkualitas baik'
+                    'suggestion': 'Ensure the image is a clear, high-quality tomato leaf'
                 }
             }), 400
         
@@ -465,7 +511,7 @@ def predict():
                         for idx in top_indices
                     ],
                     'model_input_shape': str(model.input_shape),
-                    'preprocessing_applied': 'resnet50_preprocess'
+                    'preprocessing_applied': 'normalize_0_1'
                 },
                 'image_base64': image_base64
             }
@@ -479,7 +525,7 @@ def predict():
 
 @app.route('/test-classes', methods=['GET'])
 def test_classes():
-    """Endpoint untuk testing urutan class names"""
+    """Endpoint for testing class names order"""
     return jsonify({
         'success': True,
         'data': {
@@ -509,22 +555,19 @@ if __name__ == '__main__':
     if model:
         print(f"📊 Model input shape: {model.input_shape}")
         print(f"📊 Model output classes: {len(class_names)}")
+    else:
+        print(f"❌ Model error: {model_error}")
+    
     print("🌐 Endpoints:")
     print("- GET  /")
     print("- GET  /health")
     print("- POST /predict (with image validation)")
     print("- GET  /diseases")
     print("- GET  /test-classes")
-    print("🔍 Image validation features:")
-    print("- Color analysis (green dominance)")
-    print("- Edge structure detection")
-    print("- Aspect ratio validation")
-    print("- Brightness/contrast checks")
-    print("- Model confidence validation")
     
     # Use PORT from environment (Railway sets this)
     port = int(os.environ.get('PORT', 5000))
-    debug_mode = os.environ.get('ENVIRONMENT', 'development') == 'development'
+    debug_mode = os.environ.get('ENVIRONMENT', 'production') != 'production'
     
     print(f"🌐 Server starting on http://0.0.0.0:{port}")
     app.run(host='0.0.0.0', port=port, debug=debug_mode)
