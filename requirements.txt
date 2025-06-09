@@ -4,4 +4,5 @@ Pillow==10.0.0
 gunicorn==21.2.0
 requests==2.31.0
 Werkzeug==2.3.7
-numpy==1
+numpy==1.23.5  # Versi yang kompatibel dengan TF 2.10
+tensorflow-cpu==2.10.1  # Versi lebih stabil
