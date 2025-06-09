@@ -36,13 +36,16 @@ print("✅ Flask app initialized successfully")
 
 # Model configuration
 MODEL_FILE_ID = "1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX"
-MODEL_URL = f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}"
 MODEL_PATH = "model.h5"
 
-# Alternative model sources (add more as backup)
-ALTERNATIVE_URLS = [
-    f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}&confirm=t",
-    # Add Hugging Face or other hosting URLs here as backup
+# GitHub Release URL (update with your repo info)
+# Format: https://github.com/USERNAME/REPO/releases/download/TAG/model.h5
+GITHUB_MODEL_URL = "https://github.com/YOUR_USERNAME/YOUR_REPO/releases/download/v1.0.0/model.h5"
+
+# Alternative URLs to try
+MODEL_URLS = [
+    GITHUB_MODEL_URL,  # Primary: GitHub Release (most reliable)
+    f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}&confirm=t",  # Fallback: Google Drive
 ]
 
 # Global model variable
@@ -94,47 +97,96 @@ def download_model():
         return False
 
 def download_model():
-    """Download model from Google Drive if not exists"""
+    """Download model from multiple sources if not exists"""
     if os.path.exists(MODEL_PATH):
         file_size = os.path.getsize(MODEL_PATH)
         print(f"✅ Model already exists at {MODEL_PATH} ({file_size / (1024*1024):.1f} MB)")
         return True
     
-    print("📥 Downloading model from Google Drive...")
-    try:
-        # Method 1: Try gdown with error checking
+    print("📥 Downloading model from available sources...")
+    
+    # Try multiple download methods in order of reliability
+    download_methods = [
+        ("GitHub Release", download_from_github),
+        ("Google Drive (gdown)", download_with_gdown),
+        ("Google Drive (requests)", download_with_requests),
+    ]
+    
+    for method_name, method_func in download_methods:
         try:
-            import gdown
-            print("📥 Using gdown for download...")
-            
-            # Download with gdown and verify
-            result = gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", MODEL_PATH, quiet=False)
-            
-            # gdown returns the filename if successful, None if failed
-            if result and os.path.exists(MODEL_PATH):
-                file_size = os.path.getsize(MODEL_PATH)
-                if file_size > 1024 * 1024:  # At least 1MB
-                    print(f"✅ Model downloaded successfully using gdown! Size: {file_size / (1024*1024):.1f} MB")
-                    return True
-                else:
-                    print(f"⚠️ Downloaded file too small ({file_size} bytes), removing and trying alternative...")
-                    os.remove(MODEL_PATH)
+            print(f"📥 Trying {method_name}...")
+            if method_func():
+                print(f"✅ Successfully downloaded model using {method_name}!")
+                return True
             else:
-                print("⚠️ gdown download failed or returned None")
-                
-        except ImportError:
-            print("⚠️ gdown not available, trying requests...")
+                print(f"⚠️ {method_name} failed, trying next method...")
         except Exception as e:
-            print(f"⚠️ gdown failed with error: {e}")
+            print(f"⚠️ {method_name} error: {e}")
             if os.path.exists(MODEL_PATH):
                 os.remove(MODEL_PATH)
-            
-        # Method 2: Using requests with proper Google Drive handling
-        print("📥 Trying download with requests...")
-        return download_with_requests()
+    
+    print("❌ All download methods failed")
+    return False
+
+def download_from_github():
+    """Download model from GitHub Release"""
+    import requests
+    
+    try:
+        print(f"📥 Downloading from GitHub Release...")
+        response = requests.get(GITHUB_MODEL_URL, stream=True, timeout=300)
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        print(f"📊 File size: {total_size / (1024*1024):.1f} MB")
+        
+        with open(MODEL_PATH, 'wb') as f:
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0 and downloaded % (1024*1024*10) == 0:  # Print every 10MB
+                        percent = (downloaded / total_size) * 100
+                        print(f"📥 Downloaded: {percent:.1f}%")
+        
+        # Verify download
+        if os.path.exists(MODEL_PATH):
+            file_size = os.path.getsize(MODEL_PATH)
+            if file_size > 1024 * 1024:  # At least 1MB
+                print(f"✅ GitHub download completed! Size: {file_size / (1024*1024):.1f} MB")
+                return True
+        
+        return False
         
     except Exception as e:
-        print(f"❌ Error in download_model: {e}")
+        print(f"❌ GitHub download failed: {e}")
+        return False
+
+def download_with_gdown():
+    """Download using gdown library"""
+    try:
+        import gdown
+        print("📥 Using gdown for Google Drive...")
+        
+        result = gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", MODEL_PATH, quiet=False)
+        
+        if result and os.path.exists(MODEL_PATH):
+            file_size = os.path.getsize(MODEL_PATH)
+            if file_size > 1024 * 1024:  # At least 1MB
+                print(f"✅ gdown download completed! Size: {file_size / (1024*1024):.1f} MB")
+                return True
+            else:
+                print(f"⚠️ Downloaded file too small ({file_size} bytes)")
+                os.remove(MODEL_PATH)
+        
+        return False
+        
+    except ImportError:
+        print("⚠️ gdown not available")
+        return False
+    except Exception as e:
+        print(f"❌ gdown failed: {e}")
         return False
 
 def download_with_requests():
