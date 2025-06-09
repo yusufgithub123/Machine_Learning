@@ -39,6 +39,12 @@ MODEL_FILE_ID = "1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX"
 MODEL_URL = f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}"
 MODEL_PATH = "model.h5"
 
+# Alternative model sources (add more as backup)
+ALTERNATIVE_URLS = [
+    f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}&confirm=t",
+    # Add Hugging Face or other hosting URLs here as backup
+]
+
 # Global model variable
 model = None
 
@@ -50,25 +56,121 @@ def download_model():
     
     print("📥 Downloading model from Google Drive...")
     try:
-        # Method 1: Try gdown first (more reliable for Google Drive)
+        # Try multiple download methods
+        methods = [
+            ("gdown with fuzzy", lambda: gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", MODEL_PATH, quiet=False, fuzzy=True)),
+            ("direct requests", lambda: download_with_requests()),
+            ("gdown direct", lambda: gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", MODEL_PATH, quiet=False))
+        ]
+        
+        for method_name, method_func in methods:
+            try:
+                print(f"📥 Trying {method_name}...")
+                method_func()
+                
+                # Verify file was downloaded and has reasonable size
+                if os.path.exists(MODEL_PATH):
+                    file_size = os.path.getsize(MODEL_PATH)
+                    if file_size > 1024 * 1024:  # At least 1MB
+                        print(f"✅ Model downloaded successfully using {method_name}! Size: {file_size / (1024*1024):.1f} MB")
+                        return True
+                    else:
+                        print(f"⚠️ Downloaded file too small ({file_size} bytes), trying next method...")
+                        os.remove(MODEL_PATH)
+                else:
+                    print(f"⚠️ File not found after {method_name}, trying next method...")
+                    
+            except Exception as e:
+                print(f"⚠️ {method_name} failed: {e}")
+                if os.path.exists(MODEL_PATH):
+                    os.remove(MODEL_PATH)
+                continue
+        
+        print("❌ All download methods failed")
+        return False
+        
+    except Exception as e:
+        print(f"❌ Error in download_model: {e}")
+        return False
+
+def download_model():
+    """Download model from Google Drive if not exists"""
+    if os.path.exists(MODEL_PATH):
+        file_size = os.path.getsize(MODEL_PATH)
+        print(f"✅ Model already exists at {MODEL_PATH} ({file_size / (1024*1024):.1f} MB)")
+        return True
+    
+    print("📥 Downloading model from Google Drive...")
+    try:
+        # Method 1: Try gdown with error checking
         try:
             import gdown
             print("📥 Using gdown for download...")
-            gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", MODEL_PATH, quiet=False)
-            print("✅ Model downloaded successfully using gdown!")
-            return True
+            
+            # Download with gdown and verify
+            result = gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", MODEL_PATH, quiet=False)
+            
+            # gdown returns the filename if successful, None if failed
+            if result and os.path.exists(MODEL_PATH):
+                file_size = os.path.getsize(MODEL_PATH)
+                if file_size > 1024 * 1024:  # At least 1MB
+                    print(f"✅ Model downloaded successfully using gdown! Size: {file_size / (1024*1024):.1f} MB")
+                    return True
+                else:
+                    print(f"⚠️ Downloaded file too small ({file_size} bytes), removing and trying alternative...")
+                    os.remove(MODEL_PATH)
+            else:
+                print("⚠️ gdown download failed or returned None")
+                
         except ImportError:
             print("⚠️ gdown not available, trying requests...")
         except Exception as e:
-            print(f"⚠️ gdown failed: {e}, trying requests...")
+            print(f"⚠️ gdown failed with error: {e}")
+            if os.path.exists(MODEL_PATH):
+                os.remove(MODEL_PATH)
             
-        # Method 2: Using requests as fallback
+        # Method 2: Using requests with proper Google Drive handling
         print("📥 Trying download with requests...")
-        response = requests.get(MODEL_URL, stream=True, timeout=300)  # 5 minute timeout
+        return download_with_requests()
+        
+    except Exception as e:
+        print(f"❌ Error in download_model: {e}")
+        return False
+
+def download_with_requests():
+    """Alternative download method using requests with session"""
+    import requests
+    
+    try:
+        session = requests.Session()
+        
+        # First request to get the file
+        print(f"📥 Requesting file from Google Drive...")
+        response = session.get(f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}", stream=True)
+        
+        # Check for virus scan warning and get download link
+        token = None
+        for key, value in response.cookies.items():
+            if key.startswith('download_warning'):
+                token = value
+                break
+        
+        if token:
+            print("📥 Handling Google Drive warning, getting actual download link...")
+            params = {'id': MODEL_FILE_ID, 'confirm': token}
+            response = session.get("https://drive.google.com/uc?export=download", params=params, stream=True)
+        
         response.raise_for_status()
         
+        # Check content type
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type.lower():
+            print("❌ Received HTML page instead of file - check if file is public")
+            return False
+        
+        # Download the file
         total_size = int(response.headers.get('content-length', 0))
-        print(f"📊 Model size: {total_size / (1024*1024):.1f} MB")
+        print(f"📊 Starting download... Expected size: {total_size / (1024*1024):.1f} MB")
         
         with open(MODEL_PATH, 'wb') as f:
             downloaded = 0
@@ -76,16 +178,29 @@ def download_model():
                 if chunk:
                     f.write(chunk)
                     downloaded += len(chunk)
-                    if total_size > 0:
+                    if total_size > 0 and downloaded % (1024*1024*10) == 0:  # Print every 10MB
                         percent = (downloaded / total_size) * 100
-                        if downloaded % (1024*1024) == 0:  # Print every MB
-                            print(f"📥 Downloaded: {percent:.1f}%")
+                        print(f"📥 Downloaded: {percent:.1f}%")
         
-        print("\n✅ Model downloaded successfully!")
-        return True
-        
+        # Verify download
+        if os.path.exists(MODEL_PATH):
+            file_size = os.path.getsize(MODEL_PATH)
+            print(f"✅ Download completed! Final size: {file_size / (1024*1024):.1f} MB")
+            
+            if file_size > 1024 * 1024:  # At least 1MB
+                return True
+            else:
+                print("❌ Downloaded file too small, might be an error page")
+                os.remove(MODEL_PATH)
+                return False
+        else:
+            print("❌ File not found after download")
+            return False
+            
     except Exception as e:
-        print(f"❌ Error downloading model: {e}")
+        print(f"❌ Download with requests failed: {e}")
+        if os.path.exists(MODEL_PATH):
+            os.remove(MODEL_PATH)
         return False
 
 def load_model():
@@ -96,13 +211,21 @@ def load_model():
         print("✅ Model already loaded")
         return True
         
+    if not os.path.exists(MODEL_PATH):
+        print(f"❌ Model file not found at {MODEL_PATH}")
+        return False
+        
     try:
         # Try to import TensorFlow
         print("📦 Importing TensorFlow...")
         import tensorflow as tf
         import numpy as np
         
-        print("📂 Loading model...")
+        # Check file size before loading
+        file_size = os.path.getsize(MODEL_PATH)
+        print(f"📂 Loading model from {MODEL_PATH} ({file_size / (1024*1024):.1f} MB)...")
+        
+        # Load model with error handling
         model = tf.keras.models.load_model(MODEL_PATH)
         print("✅ Model loaded successfully!")
         
@@ -110,6 +233,13 @@ def load_model():
         print(f"📊 Model input shape: {model.input_shape}")
         print(f"📊 Model output shape: {model.output_shape}")
         print(f"📊 Number of classes: {model.output_shape[-1]}")
+        
+        # Validate model output matches our class names
+        model_classes = model.output_shape[-1]
+        expected_classes = len(class_names)
+        if model_classes != expected_classes:
+            print(f"⚠️ Model has {model_classes} classes but we expect {expected_classes}")
+            print("📝 This might cause prediction issues")
         
         return True
         
@@ -120,6 +250,16 @@ def load_model():
     except Exception as e:
         print(f"❌ Error loading model: {e}")
         print("🔄 Will use simulation mode")
+        
+        # If model file is corrupted, delete it
+        if "cannot read" in str(e).lower() or "invalid" in str(e).lower():
+            print("🗑️ Removing potentially corrupted model file...")
+            try:
+                os.remove(MODEL_PATH)
+                print("✅ Corrupted model file removed")
+            except:
+                pass
+        
         return False
 
 def preprocess_image(image, target_size=(224, 224)):
