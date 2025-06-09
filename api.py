@@ -2,19 +2,20 @@ import os
 import sys
 import random
 import hashlib
-import numpy as np
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 import io
 import base64
+import gc
 
 print("🚀 Starting Tomato Disease Classification API...")
 
 # Global variables
 model = None
 model_loaded = False
+model_loading = False
 
 # Disease class names
 class_names = [
@@ -110,66 +111,61 @@ diseases_info = {
 
 print("✅ Disease database loaded")
 
-def download_model_async():
-    """Download model in background after Flask starts"""
-    global model, model_loaded
+def safe_model_download():
+    """Memory-safe model download with chunked loading"""
+    global model, model_loaded, model_loading
     
-    print("📥 Starting model download in background...")
+    if model_loading:
+        return False
+        
+    model_loading = True
     
-    # Model sources dengan prioritas
-    model_sources = [
-        {
-            "name": "github_release",
-            "url": "https://github.com/yusufgithub123/Machine_Learning/releases/download/v1.0.0/model.h5"
-        },
-        {
-            "name": "direct_url",
-            "url": os.getenv('MODEL_DIRECT_URL')
-        },
-        {
-            "name": "backup",
-            "url": os.getenv('BACKUP_MODEL_URL')
-        }
-    ]
-    
-    for source in model_sources:
-        if not source["url"]:
-            print(f"⚠️ Skipping {source['name']} - URL not configured")
-            continue
+    try:
+        print("📥 Starting memory-optimized model download...")
+        
+        model_url = "https://github.com/yusufgithub123/Machine_Learning/releases/download/v1.0.0/model.h5"
+        model_path = 'models/tomato_model.h5'
+        
+        # Check available memory first
+        import psutil
+        memory = psutil.virtual_memory()
+        available_mb = memory.available / (1024 * 1024)
+        
+        print(f"💾 Available memory: {available_mb:.1f} MB")
+        
+        if available_mb < 300:  # Need at least 300MB for model + TensorFlow
+            print("⚠️ Insufficient memory for model loading")
+            return False
+        
+        # Download with streaming to save memory
+        import requests
+        os.makedirs('models', exist_ok=True)
+        
+        print("📥 Downloading model in chunks...")
+        response = requests.get(model_url, stream=True, timeout=120)
+        
+        if response.status_code == 200:
+            with open(model_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
             
-        try:
-            print(f"📥 Trying {source['name']}: {source['url']}")
+            print("✅ Model downloaded successfully")
             
-            import requests
-            response = requests.get(source["url"], timeout=60)
+            # Try to load model
+            return load_model_safe()
+        else:
+            print(f"❌ Download failed: HTTP {response.status_code}")
+            return False
             
-            if response.status_code == 200:
-                content_type = response.headers.get('content-type', '')
-                if 'application/octet-stream' in content_type or 'binary' in content_type or source["url"].endswith('.h5'):
-                    os.makedirs('models', exist_ok=True)
-                    model_path = 'models/tomato_model.h5'
-                    
-                    with open(model_path, 'wb') as f:
-                        f.write(response.content)
-                    
-                    print(f"✅ Model downloaded successfully from {source['name']}")
-                    
-                    # Try to load the model
-                    if load_model():
-                        return True
-                else:
-                    print(f"⚠️ Received {content_type} instead of binary file")
-                    continue
-                    
-        except Exception as e:
-            print(f"❌ Failed to download from {source['name']}: {e}")
-            continue
-    
-    print("⚠️ All model download attempts failed, using simulation mode")
-    return False
+    except Exception as e:
+        print(f"❌ Download error: {e}")
+        return False
+    finally:
+        model_loading = False
 
-def load_model():
-    """Load the ML model"""
+def load_model_safe():
+    """Memory-safe model loading"""
     global model, model_loaded
     
     model_path = 'models/tomato_model.h5'
@@ -179,33 +175,41 @@ def load_model():
         return False
     
     try:
-        # Try TensorFlow first
-        try:
-            import tensorflow as tf
-            model = tf.keras.models.load_model(model_path)
-            model_loaded = True
-            print("✅ Model loaded successfully with TensorFlow")
-            return True
-        except ImportError:
-            print("⚠️ TensorFlow not available, trying alternative...")
-            
-        # Try alternative loading method
-        try:
-            import keras
-            model = keras.models.load_model(model_path)
-            model_loaded = True
-            print("✅ Model loaded successfully with Keras")
-            return True
-        except ImportError:
-            print("⚠️ Keras not available")
-            
-    except Exception as e:
-        print(f"❌ Error loading model: {e}")
+        # Force garbage collection before loading
+        gc.collect()
         
-    return False
+        print("🧠 Loading TensorFlow model...")
+        
+        # Import TensorFlow only when needed to save memory
+        import tensorflow as tf
+        
+        # Optimize TensorFlow memory usage
+        gpus = tf.config.experimental.list_physical_devices('GPU')
+        if gpus:
+            for gpu in gpus:
+                tf.config.experimental.set_memory_growth(gpu, True)
+        
+        # Load model with memory optimization
+        model = tf.keras.models.load_model(model_path)
+        model_loaded = True
+        
+        print("✅ Model loaded successfully")
+        
+        # Force garbage collection after loading
+        gc.collect()
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Model loading error: {e}")
+        # Clean up on failure
+        model = None
+        model_loaded = False
+        gc.collect()
+        return False
 
-def preprocess_image(image_data):
-    """Preprocess image for prediction"""
+def preprocess_image_smart(image_data):
+    """Smart image preprocessing with memory optimization"""
     try:
         # Decode base64 image
         if image_data.startswith('data:image'):
@@ -221,28 +225,32 @@ def preprocess_image(image_data):
         # Resize to model input size
         image = image.resize((224, 224))
         
-        # Convert to numpy array for ML model
-        img_array = np.array(image) / 255.0  # Normalize
-        img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
-        
-        return img_array
+        # Return PIL Image for simulation, numpy array for ML
+        return image
         
     except Exception as e:
         raise ValueError(f"Error preprocessing image: {str(e)}")
 
 def predict_with_ml_model(image_data):
-    """Make prediction using real ML model"""
+    """Make prediction using real ML model with memory optimization"""
     global model, model_loaded
     
     try:
         if not model_loaded or model is None:
             raise ValueError("Model not loaded")
-            
+        
+        # Import numpy only when needed
+        import numpy as np
+        
         # Preprocess image
-        img_array = preprocess_image(image_data)
+        image = preprocess_image_smart(image_data)
+        
+        # Convert to numpy array for ML model
+        img_array = np.array(image) / 255.0  # Normalize
+        img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
         
         # Make prediction
-        predictions = model.predict(img_array)
+        predictions = model.predict(img_array, verbose=0)
         pred_probs = predictions[0]  # Get first (and only) prediction
         
         # Create results
@@ -260,20 +268,20 @@ def predict_with_ml_model(image_data):
         # Sort by confidence
         results.sort(key=lambda x: x['confidence'], reverse=True)
         
+        # Clean up
+        del img_array, predictions
+        gc.collect()
+        
         return results[:5]  # Return top 5 predictions
         
     except Exception as e:
         raise ValueError(f"ML model prediction error: {str(e)}")
 
 def simulate_prediction(image_data):
-    """Fallback simulation when ML model unavailable"""
+    """Lightweight fallback simulation"""
     try:
-        # Validate image first (but don't convert to numpy)
-        if image_data.startswith('data:image'):
-            image_data = image_data.split(',')[1]
-        
-        image_bytes = base64.b64decode(image_data)
-        image = Image.open(io.BytesIO(image_bytes))
+        # Validate image first
+        image = preprocess_image_smart(image_data)
         
         # Generate deterministic but realistic predictions
         image_hash = hashlib.md5(image_data.encode()).hexdigest()
@@ -348,6 +356,7 @@ def home():
             "version": "1.0.0",
             "status": "running",
             "model_loaded": model_loaded,
+            "model_loading": model_loading,
             "simulation_mode": not model_loaded,
             "endpoints": {
                 "GET /": "API information",
@@ -371,13 +380,26 @@ def home():
 def health_check():
     """Health check endpoint"""
     try:
+        # Get memory info
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            memory_info = {
+                "total_mb": round(memory.total / (1024 * 1024), 1),
+                "available_mb": round(memory.available / (1024 * 1024), 1),
+                "used_percent": memory.percent
+            }
+        except:
+            memory_info = {"status": "unavailable"}
+            
         return jsonify({
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "model_loaded": model_loaded,
+            "model_loading": model_loading,
             "simulation_mode": not model_loaded,
-            "version": "1.0.0",
-            "uptime": "Running"
+            "memory": memory_info,
+            "version": "1.0.0"
         }), 200
     except Exception as e:
         return jsonify({"error": f"Health check error: {str(e)}"}), 500
@@ -430,8 +452,16 @@ def predict():
 def load_model_endpoint():
     """Manually trigger model download and loading"""
     try:
+        if model_loading:
+            return jsonify({
+                "success": False,
+                "message": "Model loading already in progress",
+                "model_loaded": model_loaded,
+                "timestamp": datetime.now().isoformat()
+            }), 200
+            
         print("🔄 Manual model loading triggered...")
-        success = download_model_async()
+        success = safe_model_download()
         
         return jsonify({
             "success": success,
@@ -515,18 +545,7 @@ for rule in app.url_map.iter_rules():
         print(f" {rule.rule} -> {rule.endpoint}")
 
 print("🎯 Flask application ready!")
-
-# Try to load model in background (non-blocking)
-import threading
-def background_model_load():
-    """Load model in background after Flask starts"""
-    import time
-    time.sleep(5)  # Wait for Flask to fully start
-    download_model_async()
-
-# Start background model loading
-model_thread = threading.Thread(target=background_model_load, daemon=True)
-model_thread.start()
+print("💡 Model will be loaded manually via /load-model endpoint")
 
 # For Railway deployment
 if __name__ == "__main__":
