@@ -346,6 +346,6 @@ if __name__ == '__main__':
     print("- GET  /diseases (disease info)")
     print("- GET  /test-classes (class info)")
     
-    port = int(os.environ.get('PORT', 5000))
+    port = int(os.environ.get('PORT', 8080))  # Default to 8080 for Railway
     print(f"🌐 Server starting on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
