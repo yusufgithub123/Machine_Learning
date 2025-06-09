@@ -1,4 +1,11 @@
-from flask import Flask, request, jsonify
+# Initialize on import
+if __name__ == "__main__" or __name__ == "api":
+    initialize_app()
+
+# For debugging - simple test endpoint
+@app.route('/test', methods=['GET'])
+def test_endpoint():
+    return {"status": "OK", "message": "Test endpoint working"}, 200from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import random
@@ -143,7 +150,8 @@ def download_from_url(url, source_name):
             return False
         
         total_size = int(response.headers.get('content-length', 0))
-        print(f"📊 {source_name} file size: {total_size / (1024*1024):.1f} MB")
+        if total_size > 0:
+            print(f"📊 {source_name} file size: {total_size / (1024*1024):.1f} MB")
         
         with open(MODEL_PATH, 'wb') as f:
             downloaded = 0
@@ -156,16 +164,7 @@ def download_from_url(url, source_name):
                         print(f"📥 Downloaded: {percent:.1f}%")
         
         # Verify download
-        if os.path.exists(MODEL_PATH):
-            file_size = os.path.getsize(MODEL_PATH)
-            if file_size > 1024 * 1024:  # At least 1MB
-                print(f"✅ {source_name} download completed! Size: {file_size / (1024*1024):.1f} MB")
-                return True
-            else:
-                print(f"⚠️ {source_name} file too small ({file_size} bytes)")
-                os.remove(MODEL_PATH)
-        
-        return False
+        return verify_download()
         
     except Exception as e:
         print(f"❌ {source_name} download failed: {e}")
@@ -200,59 +199,48 @@ def download_model():
     print("🔗 To use real ML model, upload model to a reliable hosting service and update WORKING_MODEL_URL")
     return False
 
-def gdown_download_fuzzy():
-    """Try gdown with fuzzy matching"""
-    try:
-        import gdown
-        result = gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", 
-                              MODEL_PATH, quiet=False, fuzzy=True)
-        return verify_download()
-    except Exception as e:
-        print(f"gdown_fuzzy error: {e}")
-        return False
-
-def gdown_download_no_check():
-    """Try gdown without verification"""
-    try:
-        import gdown
-        result = gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", 
-                              MODEL_PATH, quiet=False, verify=False)
-        return verify_download()
-    except Exception as e:
-        print(f"gdown_no_check error: {e}")
-        return False
-
-def manual_drive_session():
-    """Manual Google Drive session handling"""
+def download_from_url(url, source_name):
+    """Generic download function for any URL"""
     import requests
     
     try:
-        session = requests.Session()
+        print(f"📥 Downloading from {source_name}: {url}")
+        response = requests.get(url, stream=True, timeout=300)
+        response.raise_for_status()
         
-        # Step 1: Get the file page
-        url1 = f"https://drive.google.com/file/d/{MODEL_FILE_ID}/view"
-        response1 = session.get(url1)
+        # Check content type
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type.lower():
+            print(f"⚠️ Received HTML instead of binary file from {source_name}")
+            return False
         
-        # Step 2: Try direct download
-        url2 = f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}"
-        response2 = session.get(url2, stream=True)
+        total_size = int(response.headers.get('content-length', 0))
+        print(f"📊 {source_name} file size: {total_size / (1024*1024):.1f} MB")
         
-        # Step 3: Handle confirmation if needed
-        if 'download_warning' in response2.cookies:
-            confirm_token = response2.cookies['download_warning']
-            url3 = f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}&confirm={confirm_token}"
-            response2 = session.get(url3, stream=True)
-        
-        # Save file
         with open(MODEL_PATH, 'wb') as f:
-            for chunk in response2.iter_content(chunk_size=8192):
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0 and downloaded % (1024*1024*10) == 0:  # Print every 10MB
+                        percent = (downloaded / total_size) * 100
+                        print(f"📥 Downloaded: {percent:.1f}%")
         
-        return verify_download()
+        # Verify download
+        if os.path.exists(MODEL_PATH):
+            file_size = os.path.getsize(MODEL_PATH)
+            if file_size > 1024 * 1024:  # At least 1MB
+                print(f"✅ {source_name} download completed! Size: {file_size / (1024*1024):.1f} MB")
+                return True
+            else:
+                print(f"⚠️ {source_name} file too small ({file_size} bytes)")
+                os.remove(MODEL_PATH)
+        
+        return False
         
     except Exception as e:
-        print(f"manual_session error: {e}")
+        print(f"❌ {source_name} download failed: {e}")
         return False
 
 def verify_download():
