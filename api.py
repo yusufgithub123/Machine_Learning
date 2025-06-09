@@ -8,14 +8,13 @@ from flask_cors import CORS
 from PIL import Image
 import io
 import base64
-import gc
 
 print("🚀 Starting Tomato Disease Classification API...")
 
-# Global variables
+# Global variables for optional ML loading
 model = None
 model_loaded = False
-model_loading = False
+ml_available = False
 
 # Disease class names
 class_names = [
@@ -111,105 +110,45 @@ diseases_info = {
 
 print("✅ Disease database loaded")
 
-def safe_model_download():
-    """Memory-safe model download with chunked loading"""
-    global model, model_loaded, model_loading
-    
-    if model_loading:
-        return False
-        
-    model_loading = True
-    
+def check_ml_availability():
+    """Check if ML libraries are available for runtime installation"""
+    global ml_available
     try:
-        print("📥 Starting memory-optimized model download...")
-        
-        model_url = "https://github.com/yusufgithub123/Machine_Learning/releases/download/v1.0.0/model.h5"
-        model_path = 'models/tomato_model.h5'
-        
-        # Check available memory first
-        import psutil
-        memory = psutil.virtual_memory()
-        available_mb = memory.available / (1024 * 1024)
-        
-        print(f"💾 Available memory: {available_mb:.1f} MB")
-        
-        if available_mb < 300:  # Need at least 300MB for model + TensorFlow
-            print("⚠️ Insufficient memory for model loading")
-            return False
-        
-        # Download with streaming to save memory
-        import requests
-        os.makedirs('models', exist_ok=True)
-        
-        print("📥 Downloading model in chunks...")
-        response = requests.get(model_url, stream=True, timeout=120)
-        
-        if response.status_code == 200:
-            with open(model_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-            
-            print("✅ Model downloaded successfully")
-            
-            # Try to load model
-            return load_model_safe()
-        else:
-            print(f"❌ Download failed: HTTP {response.status_code}")
-            return False
-            
-    except Exception as e:
-        print(f"❌ Download error: {e}")
-        return False
-    finally:
-        model_loading = False
-
-def load_model_safe():
-    """Memory-safe model loading"""
-    global model, model_loaded
-    
-    model_path = 'models/tomato_model.h5'
-    
-    if not os.path.exists(model_path):
-        print("⚠️ Model file not found")
-        return False
-    
-    try:
-        # Force garbage collection before loading
-        gc.collect()
-        
-        print("🧠 Loading TensorFlow model...")
-        
-        # Import TensorFlow only when needed to save memory
+        # Try to import TensorFlow (might be installed at runtime)
         import tensorflow as tf
-        
-        # Optimize TensorFlow memory usage
-        gpus = tf.config.experimental.list_physical_devices('GPU')
-        if gpus:
-            for gpu in gpus:
-                tf.config.experimental.set_memory_growth(gpu, True)
-        
-        # Load model with memory optimization
-        model = tf.keras.models.load_model(model_path)
-        model_loaded = True
-        
-        print("✅ Model loaded successfully")
-        
-        # Force garbage collection after loading
-        gc.collect()
-        
+        import numpy as np
+        ml_available = True
+        print("✅ ML libraries available")
         return True
-        
-    except Exception as e:
-        print(f"❌ Model loading error: {e}")
-        # Clean up on failure
-        model = None
-        model_loaded = False
-        gc.collect()
+    except ImportError:
+        ml_available = False
+        print("⚠️ ML libraries not available, using simulation mode")
         return False
 
-def preprocess_image_smart(image_data):
-    """Smart image preprocessing with memory optimization"""
+def install_ml_runtime():
+    """Attempt to install ML libraries at runtime (if supported)"""
+    try:
+        print("📦 Attempting to install ML dependencies at runtime...")
+        import subprocess
+        import sys
+        
+        # Try to install minimal ML packages
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", 
+            "numpy==1.24.3", 
+            "tensorflow-cpu==2.13.0",  # CPU-only version is lighter
+            "--quiet"
+        ])
+        
+        print("✅ ML dependencies installed successfully")
+        return check_ml_availability()
+        
+    except Exception as e:
+        print(f"⚠️ Runtime installation failed: {e}")
+        return False
+
+def preprocess_image(image_data):
+    """Preprocess image for prediction"""
     try:
         # Decode base64 image
         if image_data.startswith('data:image'):
@@ -225,25 +164,66 @@ def preprocess_image_smart(image_data):
         # Resize to model input size
         image = image.resize((224, 224))
         
-        # Return PIL Image for simulation, numpy array for ML
         return image
         
     except Exception as e:
         raise ValueError(f"Error preprocessing image: {str(e)}")
 
-def predict_with_ml_model(image_data):
-    """Make prediction using real ML model with memory optimization"""
-    global model, model_loaded
+def download_and_load_model():
+    """Download and load ML model (only if ML libraries available)"""
+    global model, model_loaded, ml_available
+    
+    if not ml_available:
+        print("⚠️ ML libraries not available for model loading")
+        return False
     
     try:
-        if not model_loaded or model is None:
-            raise ValueError("Model not loaded")
+        print("📥 Downloading model from GitHub...")
         
-        # Import numpy only when needed
+        model_url = "https://github.com/yusufgithub123/Machine_Learning/releases/download/v1.0.0/model.h5"
+        model_path = 'models/tomato_model.h5'
+        
+        # Download model
+        import requests
+        os.makedirs('models', exist_ok=True)
+        
+        response = requests.get(model_url, stream=True, timeout=120)
+        
+        if response.status_code == 200:
+            with open(model_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            
+            print("✅ Model downloaded successfully")
+            
+            # Load model
+            import tensorflow as tf
+            model = tf.keras.models.load_model(model_path)
+            model_loaded = True
+            
+            print("✅ Model loaded successfully")
+            return True
+        else:
+            print(f"❌ Download failed: HTTP {response.status_code}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Model loading error: {e}")
+        return False
+
+def predict_with_ml_model(image_data):
+    """Make prediction using real ML model"""
+    global model, model_loaded, ml_available
+    
+    if not ml_available or not model_loaded or model is None:
+        raise ValueError("ML model not available")
+    
+    try:
         import numpy as np
         
         # Preprocess image
-        image = preprocess_image_smart(image_data)
+        image = preprocess_image(image_data)
         
         # Convert to numpy array for ML model
         img_array = np.array(image) / 255.0  # Normalize
@@ -268,22 +248,18 @@ def predict_with_ml_model(image_data):
         # Sort by confidence
         results.sort(key=lambda x: x['confidence'], reverse=True)
         
-        # Clean up
-        del img_array, predictions
-        gc.collect()
-        
         return results[:5]  # Return top 5 predictions
         
     except Exception as e:
         raise ValueError(f"ML model prediction error: {str(e)}")
 
 def simulate_prediction(image_data):
-    """Lightweight fallback simulation"""
+    """High-quality simulation for testing and fallback"""
     try:
         # Validate image first
-        image = preprocess_image_smart(image_data)
+        image = preprocess_image(image_data)
         
-        # Generate deterministic but realistic predictions
+        # Generate deterministic but realistic predictions based on image
         image_hash = hashlib.md5(image_data.encode()).hexdigest()
         random.seed(int(image_hash[:8], 16))
         
@@ -346,6 +322,9 @@ CORS(app)
 
 print("✅ Flask app created and CORS enabled")
 
+# Check ML availability at startup (non-blocking)
+check_ml_availability()
+
 # Routes
 @app.route('/', methods=['GET'])
 def home():
@@ -356,7 +335,7 @@ def home():
             "version": "1.0.0",
             "status": "running",
             "model_loaded": model_loaded,
-            "model_loading": model_loading,
+            "ml_available": ml_available,
             "simulation_mode": not model_loaded,
             "endpoints": {
                 "GET /": "API information",
@@ -365,7 +344,8 @@ def home():
                 "GET /diseases": "Get disease information",
                 "GET /test-classes": "Get available disease classes",
                 "GET /test": "Test endpoint",
-                "POST /load-model": "Trigger model download"
+                "POST /install-ml": "Install ML dependencies",
+                "POST /load-model": "Load ML model"
             },
             "usage": {
                 "predict": "POST with JSON: {'image': 'data:image/jpeg;base64,<base64_string>'}",
@@ -380,25 +360,12 @@ def home():
 def health_check():
     """Health check endpoint"""
     try:
-        # Get memory info
-        try:
-            import psutil
-            memory = psutil.virtual_memory()
-            memory_info = {
-                "total_mb": round(memory.total / (1024 * 1024), 1),
-                "available_mb": round(memory.available / (1024 * 1024), 1),
-                "used_percent": memory.percent
-            }
-        except:
-            memory_info = {"status": "unavailable"}
-            
         return jsonify({
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
             "model_loaded": model_loaded,
-            "model_loading": model_loading,
+            "ml_available": ml_available,
             "simulation_mode": not model_loaded,
-            "memory": memory_info,
             "version": "1.0.0"
         }), 200
     except Exception as e:
@@ -420,7 +387,7 @@ def predict():
         
         # Try ML model first, fallback to simulation
         try:
-            if model_loaded and model is not None:
+            if ml_available and model_loaded and model is not None:
                 predictions = predict_with_ml_model(image_data)
                 mode = "ml_model"
                 print("✅ Used ML model for prediction")
@@ -440,6 +407,7 @@ def predict():
             "timestamp": datetime.now().isoformat(),
             "mode": mode,
             "model_loaded": model_loaded,
+            "ml_available": ml_available,
             "message": "Prediction completed successfully"
         }), 200
         
@@ -448,25 +416,43 @@ def predict():
     except Exception as e:
         return jsonify({"error": f"Prediction error: {str(e)}"}), 500
 
+@app.route('/install-ml', methods=['POST'])
+def install_ml_endpoint():
+    """Install ML dependencies at runtime"""
+    try:
+        print("🔄 Installing ML dependencies...")
+        success = install_ml_runtime()
+        
+        return jsonify({
+            "success": success,
+            "ml_available": ml_available,
+            "message": "ML dependencies installed successfully" if success else "ML installation failed",
+            "timestamp": datetime.now().isoformat()
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": f"ML installation error: {str(e)}"}), 500
+
 @app.route('/load-model', methods=['POST'])
 def load_model_endpoint():
-    """Manually trigger model download and loading"""
+    """Load ML model (requires ML dependencies)"""
     try:
-        if model_loading:
+        if not ml_available:
             return jsonify({
                 "success": False,
-                "message": "Model loading already in progress",
-                "model_loaded": model_loaded,
+                "message": "ML dependencies not available. Try /install-ml first.",
+                "ml_available": ml_available,
                 "timestamp": datetime.now().isoformat()
-            }), 200
+            }), 400
             
-        print("🔄 Manual model loading triggered...")
-        success = safe_model_download()
+        print("🔄 Loading ML model...")
+        success = download_and_load_model()
         
         return jsonify({
             "success": success,
             "model_loaded": model_loaded,
-            "message": "Model loaded successfully" if success else "Model loading failed, using simulation",
+            "ml_available": ml_available,
+            "message": "Model loaded successfully" if success else "Model loading failed",
             "timestamp": datetime.now().isoformat()
         }), 200
         
@@ -507,7 +493,8 @@ def test_endpoint():
             "message": "Test endpoint working",
             "timestamp": datetime.now().isoformat(),
             "api_ready": True,
-            "model_status": "loaded" if model_loaded else "simulation_mode"
+            "model_status": "loaded" if model_loaded else "simulation_mode",
+            "ml_status": "available" if ml_available else "not_installed"
         }), 200
     except Exception as e:
         return jsonify({"error": f"Test endpoint error: {str(e)}"}), 500
@@ -527,7 +514,7 @@ def not_found(error):
         "error": "Not found",
         "message": "The requested endpoint was not found",
         "status": 404,
-        "available_endpoints": ["/", "/health", "/predict", "/diseases", "/test-classes", "/test", "/load-model"]
+        "available_endpoints": ["/", "/health", "/predict", "/diseases", "/test-classes", "/test", "/install-ml", "/load-model"]
     }), 404
 
 @app.errorhandler(Exception)
@@ -545,7 +532,7 @@ for rule in app.url_map.iter_rules():
         print(f" {rule.rule} -> {rule.endpoint}")
 
 print("🎯 Flask application ready!")
-print("💡 Model will be loaded manually via /load-model endpoint")
+print("💡 Use /install-ml and /load-model for ML features")
 
 # For Railway deployment
 if __name__ == "__main__":
