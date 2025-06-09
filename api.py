@@ -8,13 +8,16 @@ from PIL import Image
 import io
 import base64
 import cv2
+import requests
+import gdown
+from pathlib import Path
 
 app = Flask(__name__)
 
 # CORS Configuration - Lebih spesifik
 CORS(app, resources={
     r"/*": {
-        "origins": ["http://localhost", "http://127.0.0.1", "http://localhost:8000", "http://127.0.0.1:8000"],
+        "origins": ["*"],  # Untuk Railway, bisa lebih permisif
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"]
     }
@@ -30,19 +33,73 @@ app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-# Load model
-try:
-    model = tf.keras.models.load_model('model.h5')
-    print("✅ Model loaded successfully!")
+# Model download configuration
+MODEL_URL = "https://drive.google.com/uc?export=download&id=1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX"
+MODEL_PATH = "model.h5"
+
+def download_model():
+    """Download model from Google Drive if not exists"""
+    if os.path.exists(MODEL_PATH):
+        print(f"✅ Model already exists at {MODEL_PATH}")
+        return True
     
-    # Print model details for debugging
-    print(f"📊 Model input shape: {model.input_shape}")
-    print(f"📊 Model output shape: {model.output_shape}")
-    print(f"📊 Number of classes: {model.output_shape[-1]}")
-    
-except Exception as e:
-    print(f"❌ Error loading model: {e}")
-    model = None
+    print("📥 Downloading model from Google Drive...")
+    try:
+        # Method 1: Using gdown (more reliable for Google Drive)
+        try:
+            import gdown
+            file_id = "1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX"
+            gdown.download(f"https://drive.google.com/uc?id={file_id}", MODEL_PATH, quiet=False)
+            print("✅ Model downloaded successfully using gdown!")
+            return True
+        except Exception as e:
+            print(f"⚠️ gdown failed: {e}")
+            
+        # Method 2: Using requests as fallback
+        print("📥 Trying with requests...")
+        response = requests.get(MODEL_URL, stream=True, timeout=300)  # 5 minute timeout
+        response.raise_for_status()
+        
+        total_size = int(response.headers.get('content-length', 0))
+        print(f"📊 Model size: {total_size / (1024*1024):.1f} MB")
+        
+        with open(MODEL_PATH, 'wb') as f:
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        print(f"📥 Downloaded: {percent:.1f}%", end='\r')
+        
+        print("\n✅ Model downloaded successfully!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Error downloading model: {e}")
+        return False
+
+# Download and load model
+print("🚀 Starting model download and loading...")
+model = None
+
+if download_model():
+    try:
+        print("📂 Loading model...")
+        model = tf.keras.models.load_model(MODEL_PATH)
+        print("✅ Model loaded successfully!")
+        
+        # Print model details for debugging
+        print(f"📊 Model input shape: {model.input_shape}")
+        print(f"📊 Model output shape: {model.output_shape}")
+        print(f"📊 Number of classes: {model.output_shape[-1]}")
+        
+    except Exception as e:
+        print(f"❌ Error loading model: {e}")
+        model = None
+else:
+    print("❌ Failed to download model")
 
 # Class names - pastikan urutan sama dengan training
 class_names =[
@@ -222,7 +279,7 @@ def get_disease_info(disease_name):
         'Busuk_daun_lanjut': {
             'name': 'Busuk Daun Lanjut',
             'symptoms': 'Bercak berair yang menjadi coklat pada daun dan batang, bulu putih di bawah daun',
-            'causes': 'Oomycete Phytophthora infestans',
+            'causes': 'Oomycete Phytophthora infestrans',
             'prevention': 'Hindari kelembaban tinggi, sirkulasi udara yang baik, tanam varietas tahan',
             'treatment': 'Gunakan fungisida sistemik seperti metalaxyl, hancurkan tanaman yang terinfeksi',
             'severity': 'tinggi'
@@ -296,27 +353,20 @@ def handle_preflight():
         response.headers.add('Access-Control-Allow-Methods', "*")
         return response
 
-@app.route('/')
+@app.route('/', methods=['GET'])
 def home():
-    """Root endpoint - welcome message"""
+    """Home endpoint"""
     return jsonify({
         'success': True,
-        'message': 'API is running',
-        'model_info': {
-            'input_shape': str(model.input_shape) if model else None,
-            'num_classes': len(class_names),
-            'output_shape': str(model.output_shape) if model else None
-        },
-        'model_loaded': model is not None,
-        'status': 'healthy' if model else 'model_not_loaded',
+        'message': 'Tomato Disease Classification API',
+        'version': '1.0.0',
         'endpoints': {
             'health': '/health',
             'predict': '/predict (POST)',
             'diseases': '/diseases',
             'test_classes': '/test-classes'
         },
-        'api_version': '1.0',
-        'description': 'Enhanced Tomato Disease Classification API with Image Validation'
+        'model_status': 'loaded' if model else 'not_loaded'
     })
 
 @app.route('/health', methods=['GET'])
@@ -510,7 +560,7 @@ if __name__ == '__main__':
         print(f"📊 Model input shape: {model.input_shape}")
         print(f"📊 Model output classes: {len(class_names)}")
     print("🌐 Endpoints:")
-    print("- GET  /")
+    print("- GET  / (home)")
     print("- GET  /health")
     print("- POST /predict (with image validation)")
     print("- GET  /diseases")
@@ -522,9 +572,7 @@ if __name__ == '__main__':
     print("- Brightness/contrast checks")
     print("- Model confidence validation")
     
-    # Use PORT from environment (Railway sets this)
+    # Get port from environment variable (Railway provides this)
     port = int(os.environ.get('PORT', 5000))
-    debug_mode = os.environ.get('ENVIRONMENT', 'development') == 'development'
-    
-    print(f"🌐 Server starting on http://0.0.0.0:{port}")
-    app.run(host='0.0.0.0', port=port, debug=debug_mode)
+    print(f"🌐 Server starting on port {port}")
+    app.run(host='0.0.0.0', port=port, debug=False)  # Set debug=False for production
