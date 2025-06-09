@@ -1,8 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import numpy as np
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
-import tensorflow as tf
+try:
+    from tensorflow.keras.preprocessing.image import load_img, img_to_array
+    import tensorflow as tf
+except ImportError:
+    from keras.preprocessing.image import load_img, img_to_array
+    import tensorflow as tf
 import os
 from PIL import Image
 import io
@@ -219,7 +223,10 @@ def validate_with_model_confidence(prediction, confidence_threshold=0.4):  # Thr
     return True, None
 
 def preprocess_image(image, target_size=(224, 224)):
-    from tensorflow.keras.applications.resnet50 import preprocess_input
+    try:
+        from tensorflow.keras.applications.resnet50 import preprocess_input
+    except ImportError:
+        from keras.applications.resnet50 import preprocess_input
     
     if image.mode != 'RGB':
         image = image.convert('RGB')
