@@ -296,6 +296,29 @@ def handle_preflight():
         response.headers.add('Access-Control-Allow-Methods', "*")
         return response
 
+@app.route('/')
+def home():
+    """Root endpoint - welcome message"""
+    return jsonify({
+        'success': True,
+        'message': 'API is running',
+        'model_info': {
+            'input_shape': str(model.input_shape) if model else None,
+            'num_classes': len(class_names),
+            'output_shape': str(model.output_shape) if model else None
+        },
+        'model_loaded': model is not None,
+        'status': 'healthy' if model else 'model_not_loaded',
+        'endpoints': {
+            'health': '/health',
+            'predict': '/predict (POST)',
+            'diseases': '/diseases',
+            'test_classes': '/test-classes'
+        },
+        'api_version': '1.0',
+        'description': 'Enhanced Tomato Disease Classification API with Image Validation'
+    })
+
 @app.route('/health', methods=['GET'])
 def health_check():
     """Check API and model status"""
@@ -487,6 +510,7 @@ if __name__ == '__main__':
         print(f"📊 Model input shape: {model.input_shape}")
         print(f"📊 Model output classes: {len(class_names)}")
     print("🌐 Endpoints:")
+    print("- GET  /")
     print("- GET  /health")
     print("- POST /predict (with image validation)")
     print("- GET  /diseases")
@@ -497,5 +521,10 @@ if __name__ == '__main__':
     print("- Aspect ratio validation")
     print("- Brightness/contrast checks")
     print("- Model confidence validation")
-    print("🌐 Server starting on http://0.0.0.0:5000")
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    
+    # Use PORT from environment (Railway sets this)
+    port = int(os.environ.get('PORT', 5000))
+    debug_mode = os.environ.get('ENVIRONMENT', 'development') == 'development'
+    
+    print(f"🌐 Server starting on http://0.0.0.0:{port}")
+    app.run(host='0.0.0.0', port=port, debug=debug_mode)
