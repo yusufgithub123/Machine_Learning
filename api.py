@@ -2,12 +2,19 @@ import os
 import sys
 import random
 import hashlib
+import numpy as np
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
 import io
 import base64
+
+print("🚀 Starting Tomato Disease Classification API...")
+
+# Global variables
+model = None
+model_loaded = False
 
 # Disease class names
 class_names = [
@@ -101,71 +108,101 @@ diseases_info = {
     }
 }
 
-def download_model():
-    """Download model from various sources"""
-    model_sources = {
-        "huggingface": os.getenv('HUGGINGFACE_MODEL_URL'),
-        "drive_direct": "https://drive.google.com/uc?export=download&id=1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX&confirm=t",
-        "github_release": os.getenv('GITHUB_MODEL_URL'),
-        "backup_url": os.getenv('BACKUP_MODEL_URL')
-    }
+print("✅ Disease database loaded")
+
+def download_model_async():
+    """Download model in background after Flask starts"""
+    global model, model_loaded
     
-    print("📥 Downloading model from available sources...")
+    print("📥 Starting model download in background...")
     
-    for source_name, url in model_sources.items():
-        if not url:
-            print(f"⚠️ Skipping {source_name} - URL not configured")
+    # Model sources dengan prioritas
+    model_sources = [
+        {
+            "name": "github_release",
+            "url": "https://github.com/yusufgithub123/Machine_Learning/releases/download/v1.0.0/model.h5"
+        },
+        {
+            "name": "direct_url",
+            "url": os.getenv('MODEL_DIRECT_URL')
+        },
+        {
+            "name": "backup",
+            "url": os.getenv('BACKUP_MODEL_URL')
+        }
+    ]
+    
+    for source in model_sources:
+        if not source["url"]:
+            print(f"⚠️ Skipping {source['name']} - URL not configured")
             continue
             
         try:
-            print(f"📥 Trying {source_name}...")
-            print(f"📥 Downloading from {source_name}: {url}")
+            print(f"📥 Trying {source['name']}: {source['url']}")
             
             import requests
-            response = requests.get(url, timeout=30)
+            response = requests.get(source["url"], timeout=60)
             
             if response.status_code == 200:
                 content_type = response.headers.get('content-type', '')
-                if 'text/html' in content_type:
-                    print(f"⚠️ Received HTML instead of binary file from {source_name}")
+                if 'application/octet-stream' in content_type or 'binary' in content_type or source["url"].endswith('.h5'):
+                    os.makedirs('models', exist_ok=True)
+                    model_path = 'models/tomato_model.h5'
+                    
+                    with open(model_path, 'wb') as f:
+                        f.write(response.content)
+                    
+                    print(f"✅ Model downloaded successfully from {source['name']}")
+                    
+                    # Try to load the model
+                    if load_model():
+                        return True
+                else:
+                    print(f"⚠️ Received {content_type} instead of binary file")
                     continue
                     
-                os.makedirs('models', exist_ok=True)
-                with open('models/tomato_model.h5', 'wb') as f:
-                    f.write(response.content)
-                print(f"✅ Model downloaded successfully from {source_name}")
-                return True
-                
         except Exception as e:
-            print(f"❌ Failed to download from {source_name}: {e}")
+            print(f"❌ Failed to download from {source['name']}: {e}")
             continue
     
-    print("❌ All download methods failed")
-    print("📝 Note: API will continue with simulation mode")
-    print("🔗 To use real ML model, upload model to a reliable hosting service and update WORKING_MODEL_URL")
+    print("⚠️ All model download attempts failed, using simulation mode")
     return False
 
 def load_model():
-    """Load the downloaded model"""
+    """Load the ML model"""
+    global model, model_loaded
+    
+    model_path = 'models/tomato_model.h5'
+    
+    if not os.path.exists(model_path):
+        print("⚠️ Model file not found")
+        return False
+    
     try:
-        if not os.path.exists('models/tomato_model.h5'):
-            print("⚠️ Model file not found")
-            return False
-            
-        # Try to load with tensorflow/keras
+        # Try TensorFlow first
         try:
             import tensorflow as tf
-            global model
-            model = tf.keras.models.load_model('models/tomato_model.h5')
+            model = tf.keras.models.load_model(model_path)
+            model_loaded = True
             print("✅ Model loaded successfully with TensorFlow")
             return True
         except ImportError:
-            print("⚠️ TensorFlow not available")
-            return False
+            print("⚠️ TensorFlow not available, trying alternative...")
+            
+        # Try alternative loading method
+        try:
+            import keras
+            model = keras.models.load_model(model_path)
+            model_loaded = True
+            print("✅ Model loaded successfully with Keras")
+            return True
+        except ImportError:
+            print("⚠️ Keras not available")
             
     except Exception as e:
         print(f"❌ Error loading model: {e}")
-        return False
+        
+    return False
 
 def preprocess_image(image_data):
     """Preprocess image for prediction"""
@@ -181,19 +218,62 @@ def preprocess_image(image_data):
         if image.mode != 'RGB':
             image = image.convert('RGB')
         
-        # Resize to model input size (typically 224x224 or 256x256)
+        # Resize to model input size
         image = image.resize((224, 224))
         
-        return image
+        # Convert to numpy array for ML model
+        img_array = np.array(image) / 255.0  # Normalize
+        img_array = np.expand_dims(img_array, axis=0)  # Add batch dimension
+        
+        return img_array
         
     except Exception as e:
         raise ValueError(f"Error preprocessing image: {str(e)}")
 
-def simulate_prediction(image_data):
-    """Simulate model prediction for testing"""
+def predict_with_ml_model(image_data):
+    """Make prediction using real ML model"""
+    global model, model_loaded
+    
     try:
-        # Validate image first
-        preprocess_image(image_data)
+        if not model_loaded or model is None:
+            raise ValueError("Model not loaded")
+            
+        # Preprocess image
+        img_array = preprocess_image(image_data)
+        
+        # Make prediction
+        predictions = model.predict(img_array)
+        pred_probs = predictions[0]  # Get first (and only) prediction
+        
+        # Create results
+        results = []
+        for i, prob in enumerate(pred_probs):
+            if prob > 0.01:  # Only include predictions > 1%
+                results.append({
+                    "class": class_names[i],
+                    "confidence": round(float(prob), 3),
+                    "description": diseases_info[class_names[i]]["symptoms"],
+                    "severity": diseases_info[class_names[i]]["severity"],
+                    "treatment": diseases_info[class_names[i]]["treatment"]
+                })
+        
+        # Sort by confidence
+        results.sort(key=lambda x: x['confidence'], reverse=True)
+        
+        return results[:5]  # Return top 5 predictions
+        
+    except Exception as e:
+        raise ValueError(f"ML model prediction error: {str(e)}")
+
+def simulate_prediction(image_data):
+    """Fallback simulation when ML model unavailable"""
+    try:
+        # Validate image first (but don't convert to numpy)
+        if image_data.startswith('data:image'):
+            image_data = image_data.split(',')[1]
+        
+        image_bytes = base64.b64decode(image_data)
+        image = Image.open(io.BytesIO(image_bytes))
         
         # Generate deterministic but realistic predictions
         image_hash = hashlib.md5(image_data.encode()).hexdigest()
@@ -250,38 +330,13 @@ def simulate_prediction(image_data):
     except Exception as e:
         raise ValueError(f"Error in simulation: {str(e)}")
 
+print("✅ Prediction functions loaded")
+
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
 
-# Global variables
-model = None
-
-# Initialize everything
-def initialize_app():
-    """Initialize the application"""
-    global model
-    
-    try:
-        print("✅ Flask app initialized successfully")
-        
-        print("🚀 Initializing model...")
-        model_loaded = download_model() and load_model()
-        
-        if not model_loaded:
-            print("⚠️ Model download failed, will use simulation mode")
-        
-        print("🎯 Flask application module loaded successfully")
-        print("📊 Available routes:")
-        for rule in app.url_map.iter_rules():
-            if rule.endpoint != 'static':
-                print(f" {rule.rule} -> {rule.endpoint}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"❌ Error initializing app: {e}")
-        return False
+print("✅ Flask app created and CORS enabled")
 
 # Routes
 @app.route('/', methods=['GET'])
@@ -292,13 +347,16 @@ def home():
             "message": "🍅 Tomato Disease Classification API",
             "version": "1.0.0",
             "status": "running",
-            "simulation_mode": model is None,
+            "model_loaded": model_loaded,
+            "simulation_mode": not model_loaded,
             "endpoints": {
                 "GET /": "API information",
                 "GET /health": "Health check", 
                 "POST /predict": "Predict disease from image",
                 "GET /diseases": "Get disease information",
-                "GET /test-classes": "Get available disease classes"
+                "GET /test-classes": "Get available disease classes",
+                "GET /test": "Test endpoint",
+                "POST /load-model": "Trigger model download"
             },
             "usage": {
                 "predict": "POST with JSON: {'image': 'data:image/jpeg;base64,<base64_string>'}",
@@ -316,9 +374,10 @@ def health_check():
         return jsonify({
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "model_loaded": model is not None,
-            "simulation_mode": model is None,
-            "version": "1.0.0"
+            "model_loaded": model_loaded,
+            "simulation_mode": not model_loaded,
+            "version": "1.0.0",
+            "uptime": "Running"
         }), 200
     except Exception as e:
         return jsonify({"error": f"Health check error: {str(e)}"}), 500
@@ -337,15 +396,29 @@ def predict():
         
         image_data = data['image']
         
-        # Use simulation mode (real model would be used here if available)
-        predictions = simulate_prediction(image_data)
+        # Try ML model first, fallback to simulation
+        try:
+            if model_loaded and model is not None:
+                predictions = predict_with_ml_model(image_data)
+                mode = "ml_model"
+                print("✅ Used ML model for prediction")
+            else:
+                predictions = simulate_prediction(image_data)
+                mode = "simulation"
+                print("⚠️ Used simulation for prediction")
+        except Exception as ml_error:
+            print(f"❌ ML model failed: {ml_error}, falling back to simulation")
+            predictions = simulate_prediction(image_data)
+            mode = "simulation_fallback"
         
         return jsonify({
             "predictions": predictions,
             "top_prediction": predictions[0]["class"],
             "confidence": predictions[0]["confidence"],
             "timestamp": datetime.now().isoformat(),
-            "simulation_mode": model is None
+            "mode": mode,
+            "model_loaded": model_loaded,
+            "message": "Prediction completed successfully"
         }), 200
         
     except ValueError as e:
@@ -353,18 +426,32 @@ def predict():
     except Exception as e:
         return jsonify({"error": f"Prediction error: {str(e)}"}), 500
 
+@app.route('/load-model', methods=['POST'])
+def load_model_endpoint():
+    """Manually trigger model download and loading"""
+    try:
+        print("🔄 Manual model loading triggered...")
+        success = download_model_async()
+        
+        return jsonify({
+            "success": success,
+            "model_loaded": model_loaded,
+            "message": "Model loaded successfully" if success else "Model loading failed, using simulation",
+            "timestamp": datetime.now().isoformat()
+        }), 200
+        
+    except Exception as e:
+        return jsonify({"error": f"Model loading error: {str(e)}"}), 500
+
 @app.route('/diseases', methods=['GET'])
 def get_diseases_info():
     """Get detailed information about all diseases"""
     try:
-        # Safe access to global variables
-        diseases = getattr(sys.modules[__name__], 'diseases_info', {})
-        classes = getattr(sys.modules[__name__], 'class_names', [])
-        
         return jsonify({
-            "diseases": diseases,
-            "total_classes": len(classes),
-            "classes": classes
+            "diseases": diseases_info,
+            "total_classes": len(class_names),
+            "classes": class_names,
+            "message": "Disease database retrieved successfully"
         }), 200
     except Exception as e:
         return jsonify({"error": f"Diseases endpoint error: {str(e)}"}), 500
@@ -373,16 +460,27 @@ def get_diseases_info():
 def test_classes():
     """Get available disease classes for testing"""
     try:
-        # Safe access to class_names
-        classes = getattr(sys.modules[__name__], 'class_names', [])
-        
         return jsonify({
-            "classes": classes,
-            "total": len(classes),
+            "classes": class_names,
+            "total": len(class_names),
             "note": "These are the disease classes the model can predict"
         }), 200
     except Exception as e:
         return jsonify({"error": f"Test classes endpoint error: {str(e)}"}), 500
+
+@app.route('/test', methods=['GET'])
+def test_endpoint():
+    """Simple test endpoint"""
+    try:
+        return jsonify({
+            "status": "OK", 
+            "message": "Test endpoint working",
+            "timestamp": datetime.now().isoformat(),
+            "api_ready": True,
+            "model_status": "loaded" if model_loaded else "simulation_mode"
+        }), 200
+    except Exception as e:
+        return jsonify({"error": f"Test endpoint error: {str(e)}"}), 500
 
 # Global error handlers
 @app.errorhandler(500)
@@ -399,7 +497,7 @@ def not_found(error):
         "error": "Not found",
         "message": "The requested endpoint was not found",
         "status": 404,
-        "available_endpoints": ["/", "/health", "/predict", "/diseases", "/test-classes"]
+        "available_endpoints": ["/", "/health", "/predict", "/diseases", "/test-classes", "/test", "/load-model"]
     }), 404
 
 @app.errorhandler(Exception)
@@ -410,16 +508,28 @@ def handle_exception(e):
         "status": 500
     }), 500
 
-# For debugging - simple test endpoint
-@app.route('/test', methods=['GET'])
-def test_endpoint():
-    return {"status": "OK", "message": "Test endpoint working"}, 200
+print("✅ All routes defined")
+print("📊 Available routes:")
+for rule in app.url_map.iter_rules():
+    if rule.endpoint != 'static':
+        print(f" {rule.rule} -> {rule.endpoint}")
 
-# Initialize on import
-if __name__ == "__main__" or __name__ == "api":
-    initialize_app()
+print("🎯 Flask application ready!")
+
+# Try to load model in background (non-blocking)
+import threading
+def background_model_load():
+    """Load model in background after Flask starts"""
+    import time
+    time.sleep(5)  # Wait for Flask to fully start
+    download_model_async()
+
+# Start background model loading
+model_thread = threading.Thread(target=background_model_load, daemon=True)
+model_thread.start()
 
 # For Railway deployment
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
+    print(f"🚀 Starting server on port {port}")
     app.run(host="0.0.0.0", port=port, debug=False)
