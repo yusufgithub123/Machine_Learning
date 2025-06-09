@@ -38,10 +38,13 @@ print("✅ Flask app initialized successfully")
 MODEL_FILE_ID = "1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX"
 MODEL_PATH = "model.h5"
 
-# Multiple model sources (in order of preference)
+# ADD YOUR WORKING URL HERE AFTER UPLOADING TO HOSTING
+# Example: "https://huggingface.co/username/tomato-disease-model/resolve/main/model.h5"
+WORKING_MODEL_URL = None  # Set this to your working URL
+
 MODEL_URLS = {
+    "huggingface": WORKING_MODEL_URL,  # Will be skipped if None
     "drive_direct": f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}&confirm=t",
-    "drive_alt": f"https://docs.google.com/uc?export=download&id={MODEL_FILE_ID}",
 }
 
 # Global model variable
@@ -177,8 +180,12 @@ def download_model():
     
     print("📥 Downloading model from available sources...")
     
-    # Try each source in order
+    # Try each source in order, skip None URLs
     for source_name, url in MODEL_URLS.items():
+        if url is None:
+            print(f"⚠️ Skipping {source_name} - URL not configured")
+            continue
+            
         try:
             print(f"📥 Trying {source_name}...")
             if download_from_url(url, source_name):
@@ -188,25 +195,9 @@ def download_model():
             if os.path.exists(MODEL_PATH):
                 os.remove(MODEL_PATH)
     
-    # Enhanced fallback with different gdown approaches
-    print("📥 Trying enhanced gdown approaches...")
-    gdown_methods = [
-        ("gdown_fuzzy", lambda: gdown_download_fuzzy()),
-        ("gdown_no_check", lambda: gdown_download_no_check()),
-        ("manual_session", lambda: manual_drive_session()),
-    ]
-    
-    for method_name, method_func in gdown_methods:
-        try:
-            print(f"📥 Trying {method_name}...")
-            if method_func():
-                return True
-        except Exception as e:
-            print(f"⚠️ {method_name} failed: {e}")
-            if os.path.exists(MODEL_PATH):
-                os.remove(MODEL_PATH)
-    
     print("❌ All download methods failed")
+    print("📝 Note: API will continue with simulation mode")
+    print("🔗 To use real ML model, upload model to a reliable hosting service and update WORKING_MODEL_URL")
     return False
 
 def gdown_download_fuzzy():
