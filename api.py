@@ -8,21 +8,6 @@ from flask_cors import CORS
 from PIL import Image
 import io
 import base64
-import logging
-from flask import Flask
-
-app = Flask(__name__)
-
-# Configure logging
-gunicorn_logger = logging.getLogger('gunicorn.error')
-app.logger.handlers = gunicorn_logger.handlers
-app.logger.setLevel(gunicorn_logger.level)
-
-@app.route('/')
-def hello():
-    app.logger.info('Info level log')
-    return "Hello World"
-
 
 print("🚀 Starting Tomato Disease Classification API...")
 
