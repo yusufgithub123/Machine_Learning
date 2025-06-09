@@ -38,15 +38,11 @@ print("✅ Flask app initialized successfully")
 MODEL_FILE_ID = "1dIi88dezOiW1AtQCb6oSP_mXGWKmb_hX"
 MODEL_PATH = "model.h5"
 
-# GitHub Release URL (update with your repo info)
-# Format: https://github.com/USERNAME/REPO/releases/download/TAG/model.h5
-GITHUB_MODEL_URL = "https://github.com/YOUR_USERNAME/YOUR_REPO/releases/download/v1.0.0/model.h5"
-
-# Alternative URLs to try
-MODEL_URLS = [
-    GITHUB_MODEL_URL,  # Primary: GitHub Release (most reliable)
-    f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}&confirm=t",  # Fallback: Google Drive
-]
+# Multiple model sources (in order of preference)
+MODEL_URLS = {
+    "drive_direct": f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}&confirm=t",
+    "drive_alt": f"https://docs.google.com/uc?export=download&id={MODEL_FILE_ID}",
+}
 
 # Global model variable
 model = None
@@ -128,17 +124,23 @@ def download_model():
     print("❌ All download methods failed")
     return False
 
-def download_from_github():
-    """Download model from GitHub Release"""
+def download_from_url(url, source_name):
+    """Generic download function for any URL"""
     import requests
     
     try:
-        print(f"📥 Downloading from GitHub Release...")
-        response = requests.get(GITHUB_MODEL_URL, stream=True, timeout=300)
+        print(f"📥 Downloading from {source_name}: {url}")
+        response = requests.get(url, stream=True, timeout=300)
         response.raise_for_status()
         
+        # Check content type
+        content_type = response.headers.get('content-type', '')
+        if 'text/html' in content_type.lower():
+            print(f"⚠️ Received HTML instead of binary file from {source_name}")
+            return False
+        
         total_size = int(response.headers.get('content-length', 0))
-        print(f"📊 File size: {total_size / (1024*1024):.1f} MB")
+        print(f"📊 {source_name} file size: {total_size / (1024*1024):.1f} MB")
         
         with open(MODEL_PATH, 'wb') as f:
             downloaded = 0
@@ -154,40 +156,125 @@ def download_from_github():
         if os.path.exists(MODEL_PATH):
             file_size = os.path.getsize(MODEL_PATH)
             if file_size > 1024 * 1024:  # At least 1MB
-                print(f"✅ GitHub download completed! Size: {file_size / (1024*1024):.1f} MB")
-                return True
-        
-        return False
-        
-    except Exception as e:
-        print(f"❌ GitHub download failed: {e}")
-        return False
-
-def download_with_gdown():
-    """Download using gdown library"""
-    try:
-        import gdown
-        print("📥 Using gdown for Google Drive...")
-        
-        result = gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", MODEL_PATH, quiet=False)
-        
-        if result and os.path.exists(MODEL_PATH):
-            file_size = os.path.getsize(MODEL_PATH)
-            if file_size > 1024 * 1024:  # At least 1MB
-                print(f"✅ gdown download completed! Size: {file_size / (1024*1024):.1f} MB")
+                print(f"✅ {source_name} download completed! Size: {file_size / (1024*1024):.1f} MB")
                 return True
             else:
-                print(f"⚠️ Downloaded file too small ({file_size} bytes)")
+                print(f"⚠️ {source_name} file too small ({file_size} bytes)")
                 os.remove(MODEL_PATH)
         
         return False
         
-    except ImportError:
-        print("⚠️ gdown not available")
-        return False
     except Exception as e:
-        print(f"❌ gdown failed: {e}")
+        print(f"❌ {source_name} download failed: {e}")
         return False
+
+def download_model():
+    """Download model from multiple sources if not exists"""
+    if os.path.exists(MODEL_PATH):
+        file_size = os.path.getsize(MODEL_PATH)
+        print(f"✅ Model already exists at {MODEL_PATH} ({file_size / (1024*1024):.1f} MB)")
+        return True
+    
+    print("📥 Downloading model from available sources...")
+    
+    # Try each source in order
+    for source_name, url in MODEL_URLS.items():
+        try:
+            print(f"📥 Trying {source_name}...")
+            if download_from_url(url, source_name):
+                return True
+        except Exception as e:
+            print(f"⚠️ {source_name} error: {e}")
+            if os.path.exists(MODEL_PATH):
+                os.remove(MODEL_PATH)
+    
+    # Enhanced fallback with different gdown approaches
+    print("📥 Trying enhanced gdown approaches...")
+    gdown_methods = [
+        ("gdown_fuzzy", lambda: gdown_download_fuzzy()),
+        ("gdown_no_check", lambda: gdown_download_no_check()),
+        ("manual_session", lambda: manual_drive_session()),
+    ]
+    
+    for method_name, method_func in gdown_methods:
+        try:
+            print(f"📥 Trying {method_name}...")
+            if method_func():
+                return True
+        except Exception as e:
+            print(f"⚠️ {method_name} failed: {e}")
+            if os.path.exists(MODEL_PATH):
+                os.remove(MODEL_PATH)
+    
+    print("❌ All download methods failed")
+    return False
+
+def gdown_download_fuzzy():
+    """Try gdown with fuzzy matching"""
+    try:
+        import gdown
+        result = gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", 
+                              MODEL_PATH, quiet=False, fuzzy=True)
+        return verify_download()
+    except Exception as e:
+        print(f"gdown_fuzzy error: {e}")
+        return False
+
+def gdown_download_no_check():
+    """Try gdown without verification"""
+    try:
+        import gdown
+        result = gdown.download(f"https://drive.google.com/uc?id={MODEL_FILE_ID}", 
+                              MODEL_PATH, quiet=False, verify=False)
+        return verify_download()
+    except Exception as e:
+        print(f"gdown_no_check error: {e}")
+        return False
+
+def manual_drive_session():
+    """Manual Google Drive session handling"""
+    import requests
+    
+    try:
+        session = requests.Session()
+        
+        # Step 1: Get the file page
+        url1 = f"https://drive.google.com/file/d/{MODEL_FILE_ID}/view"
+        response1 = session.get(url1)
+        
+        # Step 2: Try direct download
+        url2 = f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}"
+        response2 = session.get(url2, stream=True)
+        
+        # Step 3: Handle confirmation if needed
+        if 'download_warning' in response2.cookies:
+            confirm_token = response2.cookies['download_warning']
+            url3 = f"https://drive.google.com/uc?export=download&id={MODEL_FILE_ID}&confirm={confirm_token}"
+            response2 = session.get(url3, stream=True)
+        
+        # Save file
+        with open(MODEL_PATH, 'wb') as f:
+            for chunk in response2.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        
+        return verify_download()
+        
+    except Exception as e:
+        print(f"manual_session error: {e}")
+        return False
+
+def verify_download():
+    """Verify downloaded file"""
+    if os.path.exists(MODEL_PATH):
+        file_size = os.path.getsize(MODEL_PATH)
+        if file_size > 1024 * 1024:  # At least 1MB
+            print(f"✅ Download verified! Size: {file_size / (1024*1024):.1f} MB")
+            return True
+        else:
+            print(f"⚠️ File too small ({file_size} bytes)")
+            os.remove(MODEL_PATH)
+    return False
 
 def download_with_requests():
     """Alternative download method using requests with session"""
